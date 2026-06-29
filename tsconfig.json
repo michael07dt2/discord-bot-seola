@@ -25,6 +25,17 @@
     "noUncheckedSideEffectImports": true,
     "moduleDetection": "force",
     "skipLibCheck": true,
+    "paths": {
+      "@/*": [
+        "./src/*"
+      ],
+      "@util/*": [
+        "./src/util/*"
+      ],
+      "@db/*": [
+        "./src/db/*"
+      ]
+    }
   },
   "include": [
     "src/**/*"
