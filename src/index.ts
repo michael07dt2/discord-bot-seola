@@ -14,6 +14,7 @@ import {
 } from "@discordjs/voice";
 
 import { chatAI, connectToVoiceChannel } from "./util/helper.ts";
+import { songMap } from "./util/songmap.ts";
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -87,7 +88,7 @@ discordClient.on("messageCreate", async (message) => {
     message.content.endsWith("틀어줘")
   ) {
     const userMessage = message.content
-      .slice("설아야".length)
+      .replace("설아야", "")
       .replace("틀어줘", "")
       .trim();
     if (!userMessage) {
@@ -109,13 +110,14 @@ discordClient.on("messageCreate", async (message) => {
       return;
     }
 
-    if (userMessage === "아리아") {
+    const songFileName = songMap[userMessage];
+    if (songFileName) {
       try {
         const targetPath = path.resolve(
           process.cwd(),
           "src",
           "audio",
-          "01Aria.mp3",
+          songFileName,
         );
 
         if (!fs.existsSync(targetPath)) {
@@ -144,7 +146,7 @@ discordClient.on("messageCreate", async (message) => {
             ),
           );
 
-        await message.reply("아리아 재생 시작!");
+        await message.reply(`${userMessage} 재생 시작!`);
         return;
       } catch (error) {
         console.error("오디오 리소스 생성 실패:", error);
@@ -153,7 +155,7 @@ discordClient.on("messageCreate", async (message) => {
       }
     }
 
-    await message.reply("해당 음악은 재생할 수 없습니다. 아리아만 지원됩니다.");
+    await message.reply("해당 음악은 재생할 수 없습니다.");
     return;
   }
 
@@ -201,6 +203,14 @@ discordClient.on("messageCreate", async (message) => {
 
   // "설아야"로 시작하는 메시지 처리
   if (message.content.startsWith("설아야")) {
+    message.content = message.content.replace("설아야", "");
+    await chatAI(message);
+    return;
+  }
+
+  // "설아"로 시작하는 메시지 처리
+  if (message.content.startsWith("설아")) {
+    message.content = message.content.replace("설아", "");
     await chatAI(message);
     return;
   }

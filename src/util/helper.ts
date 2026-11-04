@@ -29,7 +29,7 @@ export const chatAI = async (
   message: OmitPartialGroupDMChannel<Message<boolean>>,
 ) => {
   const userName = message?.member?.displayName;
-  const userMessage = message.content.slice("설아야".length).trim();
+  const userMessage = message.content.trim();
 
   if (!userMessage) {
     await message.reply("메시지를 입력해주세요.");
@@ -59,7 +59,11 @@ export const chatAI = async (
     const completion = await openAiClient.chat.completions.create({
       model: models[1]!,
       messages: [
-        { role: "developer", content: "You are a korean girlfriend." },
+        {
+          role: "developer",
+          content:
+            "You are a korean girlfriend. Reply format is Markdown Text 101. Reply in Korean. Reply under 2000 characters.",
+        },
         ...contextData.map((context) => {
           return JSON.parse(context.context);
         }),

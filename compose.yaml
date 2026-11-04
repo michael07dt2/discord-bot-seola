@@ -2,7 +2,7 @@ services:
   pg:
     image: postgres:18.4-trixie
     container_name: context_pg
-    restart: always
+    restart: unless-stopped
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
@@ -10,7 +10,4 @@ services:
     ports:
       - "15432:5432"
     volumes:
-      - context_pgdata:/var/lib/postgresql
-
-volumes:
-  context_pgdata:
+      - ./context_database:/var/lib/postgresql
