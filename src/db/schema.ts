@@ -11,3 +11,9 @@ export const contextsTable = pgTable(
   },
   (table) => [unique("contexts_id_unique").on(table.id)],
 );
+
+// 사용자별 선택된 LLM 모델을 저장하는 테이블
+export const userModelsTable = pgTable("user_models", {
+  name: varchar({ length: 255 }).primaryKey(),
+  model: varchar({ length: 255 }).notNull(),
+});

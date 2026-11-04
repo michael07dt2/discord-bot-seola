@@ -13,7 +13,14 @@ import {
   entersState,
 } from "@discordjs/voice";
 
-import { chatAI, connectToVoiceChannel } from "./util/helper.ts";
+import {
+  chatAI,
+  connectToVoiceChannel,
+  getAvailableModels,
+  getUserKey,
+  getUserModel,
+  setUserModel,
+} from "./util/helper.ts";
 import { songMap } from "./util/songmap.ts";
 
 const app = express();
@@ -183,20 +190,58 @@ discordClient.on("messageCreate", async (message) => {
   // 모델 목록을 가져오는 명령어 처리
   if (message.content.startsWith("!models")) {
     try {
-      const response = await fetch("http://localhost:11434/api/tags");
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
-      const data = (await response.json()) as {
-        models: { name: string; model: string }[];
-      };
-      const modelNames = data.models.map((model) => model.name);
-      const modelList = modelNames.join(", ");
+      const userName = getUserKey(message);
+      const [modelNames, currentModel] = await Promise.all([
+        getAvailableModels(),
+        getUserModel(userName),
+      ]);
+      const modelList = modelNames.map((m) => `\`${m}\``).join(", ");
 
-      await message.reply(`사용 가능한 모델: ${modelList}`);
+      await message.reply(
+        `**${userName}**님의 현재 모델: \`${currentModel}\`\n사용 가능한 모델: ${modelList}`,
+      );
     } catch (error) {
       console.error("모델 목록 조회 중 오류 발생:", error);
       await message.reply("모델 목록을 불러오는 중 오류가 발생했습니다.");
+    }
+    return;
+  }
+
+  // 유저별 모델 확인 및 변경 명령어 처리 (!model <모델명> / !모델 <모델명>)
+  if (
+    message.content.startsWith("!model") ||
+    message.content.startsWith("!모델")
+  ) {
+    try {
+      const userName = getUserKey(message);
+      const targetModel = message.content
+        .replace(/^(!model|!모델)\s*/i, "")
+        .trim();
+
+      if (!targetModel) {
+        const [availableModels, currentModel] = await Promise.all([
+          getAvailableModels(),
+          getUserModel(userName),
+        ]);
+        await message.reply(
+          `**${userName}**님의 현재 모델: \`${currentModel}\`\n사용 가능한 모델: ${availableModels.map((m) => `\`${m}\``).join(", ")}\n변경 방법: \`!model <모델명>\` 또는 \`설아야 모델 <모델명>으로 바꿔줘\``,
+        );
+        return;
+      }
+
+      const result = await setUserModel(userName, targetModel);
+      if (result.success && result.model) {
+        await message.reply(
+          `**${userName}**님의 대화 모델이 \`${result.model}\`(으)로 변경되었습니다.`,
+        );
+      } else {
+        await message.reply(
+          `\`${targetModel}\` 모델을 찾을 수 없습니다.\n사용 가능한 모델: ${result.availableModels.map((m) => `\`${m}\``).join(", ")}`,
+        );
+      }
+    } catch (error) {
+      console.error("모델 변경 중 오류 발생:", error);
+      await message.reply("모델을 변경하는 중 오류가 발생했습니다.");
     }
     return;
   }

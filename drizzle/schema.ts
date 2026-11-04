@@ -8,3 +8,8 @@ export const contexts = pgTable("contexts", {
 	name: varchar({ length: 100 }).notNull(),
 	context: text().notNull(),
 });
+
+export const userModels = pgTable("user_models", {
+	name: varchar({ length: 255 }).primaryKey(),
+	model: varchar({ length: 255 }).notNull(),
+});
