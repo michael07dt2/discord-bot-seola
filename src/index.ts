@@ -13,7 +13,7 @@ import {
   entersState,
 } from "@discordjs/voice";
 
-import { chatAI, connectToVoiceChannel } from "@util/helper.js";
+import { chatAI, connectToVoiceChannel } from "./util/helper.ts";
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -180,14 +180,22 @@ discordClient.on("messageCreate", async (message) => {
 
   // 모델 목록을 가져오는 명령어 처리
   if (message.content.startsWith("!models")) {
-    const response = await fetch("http://localhost:11434/api/tags");
-    const data = (await response.json()) as {
-      models: { name: string; model: string }[];
-    };
-    const modelNames = data.models.map((model) => model.name);
-    const modelList = modelNames.join(", ");
+    try {
+      const response = await fetch("http://localhost:11434/api/tags");
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+      const data = (await response.json()) as {
+        models: { name: string; model: string }[];
+      };
+      const modelNames = data.models.map((model) => model.name);
+      const modelList = modelNames.join(", ");
 
-    await message.reply(`사용 가능한 모델: ${modelList}`);
+      await message.reply(`사용 가능한 모델: ${modelList}`);
+    } catch (error) {
+      console.error("모델 목록 조회 중 오류 발생:", error);
+      await message.reply("모델 목록을 불러오는 중 오류가 발생했습니다.");
+    }
     return;
   }
 

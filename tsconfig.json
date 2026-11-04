@@ -25,6 +25,8 @@
     "noUncheckedSideEffectImports": true,
     "moduleDetection": "force",
     "skipLibCheck": true,
+    "allowImportingTsExtensions": true,
+    "noEmit": true,
     "paths": {
       "@/*": [
         "./src/*"
@@ -38,7 +40,9 @@
     }
   },
   "include": [
-    "src/**/*"
+    "src/**/*",
+    "drizzle/**/*",
+    "drizzle.config.ts"
   ],
   "exclude": [
     "node_modules",

@@ -10,11 +10,14 @@ import {
 } from "@discordjs/voice";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { eq } from "drizzle-orm";
-import { contextsTable } from "@/db/schema.js";
+import { contextsTable } from "../db/schema.ts";
 import { OpenAI } from "openai";
 import "dotenv/config";
 
-const db = drizzle(process.env.DATABASE_URL!);
+const db = drizzle(
+  process.env.DATABASE_URL ||
+    "postgresql://postgres:postgres@localhost:15432/context",
+);
 
 const openAiClient = new OpenAI({
   baseURL: "http://localhost:11434/v1",
@@ -29,11 +32,11 @@ export const chatAI = async (
   const userMessage = message.content.slice("설아야".length).trim();
 
   if (!userMessage) {
-    message.reply("메시지를 입력해주세요.");
+    await message.reply("메시지를 입력해주세요.");
     return;
   }
 
-  let contextData: { id: number; name: string; context: string }[] = [];
+  let contextData: (typeof contextsTable.$inferSelect)[] = [];
   if (userName) {
     try {
       const context = await db
@@ -46,7 +49,8 @@ export const chatAI = async (
       }
     } catch (error) {
       console.error("데이터베이스 조회 중 오류 발생:", error);
-      message.reply("오류가 발생했습니다. 나중에 다시 시도해주세요.");
+      await message.reply("오류가 발생했습니다. 나중에 다시 시도해주세요.");
+      return;
     }
   }
 
@@ -65,7 +69,7 @@ export const chatAI = async (
 
     const responseContent = completion.choices[0]?.message.content;
     if (responseContent) {
-      message.reply(responseContent);
+      await message.reply(responseContent);
 
       const newContext: typeof contextsTable.$inferInsert = {
         name: userName || "Unknown",
@@ -84,11 +88,11 @@ export const chatAI = async (
 
       await db.insert(contextsTable).values(botContext);
     } else {
-      message.reply("응답을 생성하지 못했습니다.");
+      await message.reply("응답을 생성하지 못했습니다.");
     }
   } catch (error) {
     console.error("OpenAI API 호출 중 오류 발생:", error);
-    message.reply("오류가 발생했습니다. 나중에 다시 시도해주세요.");
+    await message.reply("오류가 발생했습니다. 나중에 다시 시도해주세요.");
   }
 };
 
