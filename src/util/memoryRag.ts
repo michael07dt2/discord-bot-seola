@@ -1,12 +1,6 @@
-import { drizzle } from "drizzle-orm/node-postgres";
 import { desc, eq, sql } from "drizzle-orm";
-import { userMemoriesTable } from "../db/schema.ts";
-import "dotenv/config";
-
-const db = drizzle(
-  process.env.DATABASE_URL ||
-    "postgresql://postgres:postgres@localhost:15432/context",
-);
+import { db, userMemoriesTable } from "../db/index.ts";
+import CONFIG from "../config/index.ts";
 
 export interface MemoryItem {
   id: number;
@@ -84,7 +78,7 @@ export const getEmbedding = async (text: string): Promise<number[]> => {
   if (!trimmed) return [];
 
   try {
-    const res = await fetch("http://localhost:11434/api/embeddings", {
+    const res = await fetch(`${CONFIG.OLLAMA_BASE_URL}/api/embeddings`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({

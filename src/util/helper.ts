@@ -9,9 +9,9 @@ import {
   entersState,
   VoiceConnectionStatus,
 } from "@discordjs/voice";
-import { drizzle } from "drizzle-orm/node-postgres";
 import { asc, eq, sql } from "drizzle-orm";
-import { contextsTable, userModelsTable } from "../db/schema.ts";
+import { db, contextsTable, userModelsTable } from "../db/index.ts";
+import CONFIG from "../config/index.ts";
 import {
   extractPersonaCommand,
   getUserPersona,
@@ -32,13 +32,8 @@ import {
   SEOLA_TOOLS,
 } from "./tools.ts";
 
-const db = drizzle(
-  process.env.DATABASE_URL ||
-    "postgresql://postgres:postgres@localhost:15432/context",
-);
-
 const openAiClient = new OpenAI({
-  baseURL: "http://localhost:11434/v1",
+  baseURL: `${CONFIG.OLLAMA_BASE_URL}/v1`,
   apiKey: "ollama",
 });
 
@@ -162,7 +157,7 @@ export const getUserKey = (
 
 // 로컬 Ollama 서버에서 설치된 모델 목록 조회
 export const getAvailableModels = async (): Promise<string[]> => {
-  const response = await fetch("http://localhost:11434/api/tags");
+  const response = await fetch(`${CONFIG.OLLAMA_BASE_URL}/api/tags`);
   if (!response.ok) {
     throw new Error(`HTTP error! status: ${response.status}`);
   }

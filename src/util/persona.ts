@@ -1,12 +1,5 @@
-import { drizzle } from "drizzle-orm/node-postgres";
 import { eq, sql } from "drizzle-orm";
-import { userPersonasTable } from "../db/schema.ts";
-import "dotenv/config";
-
-const db = drizzle(
-  process.env.DATABASE_URL ||
-    "postgresql://postgres:postgres@localhost:15432/context",
-);
+import { db, userPersonasTable } from "../db/index.ts";
 
 export type PersonaId =
   | "girlfriend"

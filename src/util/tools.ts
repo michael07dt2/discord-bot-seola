@@ -5,6 +5,7 @@ import { promisify } from "util";
 import type { ChatCompletionTool } from "openai/resources/chat/completions/completions.js";
 import type { SendableChannels } from "discord.js";
 import { getCurrentVoicePreset, leaveAllVoiceChannels } from "./voiceChat.ts";
+import CONFIG from "../config/index.ts";
 
 const execFileAsync = promisify(execFile);
 
@@ -294,13 +295,13 @@ const resolveCliBinary = async (
   const candidates =
     engine === "hermes"
       ? [
-          process.env.HERMES_BIN,
+          CONFIG.HERMES_BIN,
           "/opt/homebrew/bin/hermes",
           path.join(process.env.HOME || "", ".local/bin/hermes"),
           "hermes",
         ]
       : [
-          process.env.AGY_BIN,
+          CONFIG.AGY_BIN,
           "/opt/homebrew/bin/agy",
           "/usr/local/bin/agy",
           "agy",

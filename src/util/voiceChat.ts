@@ -18,6 +18,7 @@ import {
   pipeline,
   type AutomaticSpeechRecognitionPipeline,
 } from "@huggingface/transformers";
+import CONFIG from "../config/index.ts";
 import { MsEdgeTTS, OUTPUT_FORMAT } from "msedge-tts";
 import type {
   Client,
@@ -39,8 +40,7 @@ import {
 const { OpusEncoder } = opus;
 
 // Whisper 로컬 STT 모델 (기본값: 한국어 음성 인식률이 대폭 향상된 whisper-small)
-const WHISPER_MODEL =
-  process.env.WHISPER_MODEL || "onnx-community/whisper-small";
+const WHISPER_MODEL = CONFIG.WHISPER_MODEL;
 const FALLBACK_WHISPER_MODEL = "onnx-community/whisper-base";
 
 // Whisper 입력 샘플링 레이트 (16kHz Mono)
@@ -170,8 +170,8 @@ export const VOICE_PRESETS: Record<string, VoicePreset> = {
 
 // 현재 선택된 목소리 프리셋 (기본값: 한국어 억양이 가장 자연스러운 MeloTTS-Korean 기반 'seola')
 let currentVoicePresetKey: string =
-  process.env.TTS_PRESET && VOICE_PRESETS[process.env.TTS_PRESET]
-    ? process.env.TTS_PRESET
+  CONFIG.TTS_PRESET && VOICE_PRESETS[CONFIG.TTS_PRESET]
+    ? CONFIG.TTS_PRESET
     : "seola";
 
 export const getCurrentVoicePreset = (): VoicePreset => {

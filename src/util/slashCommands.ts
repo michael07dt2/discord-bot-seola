@@ -42,6 +42,7 @@ import {
   speakInVoiceChannel,
   VOICE_PRESETS,
 } from "./voiceChat.ts";
+import CONFIG from "../config/index.ts";
 import {
   notifyDashboardStatusChanged,
   type DashboardStatusSnapshot,
@@ -324,8 +325,8 @@ export const slashCommands = [
 
 // 디스코드 API에 슬래시 명령어 등록
 export const registerSlashCommands = async (client: Client): Promise<void> => {
-  const token = process.env.DISCORD_TOKEN;
-  const appId = process.env.APP_ID || client.user?.id;
+  const token = CONFIG.DISCORD_TOKEN;
+  const appId = CONFIG.APP_ID || client.user?.id;
 
   if (!token || !appId) {
     console.warn(
