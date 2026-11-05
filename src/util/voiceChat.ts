@@ -649,7 +649,12 @@ const cleanTextForTTS = (text: string): string => {
     .replace(/```[\s\S]*?```/g, "")
     .replace(/`([^`]+)`/g, "$1")
     // <think>...</think> 등 태그 블록 제거
-    .replace(/<think>[\s\S]*?<\/think>/gi, "");
+    .replace(/<think>[\s\S]*?<\/think>/gi, "")
+    // **(지문)**, *(지문)* 및 **지문**, *지문* 제거
+    .replace(/\*\*\s*\([^)]*\)\s*\*\*/g, "")
+    .replace(/\*\s*\([^)]*\)\s*\*/g, "")
+    .replace(/\*\*[^*]+\*\*/g, "")
+    .replace(/\*[^*]+\*/g, "");
 
   // 중첩 괄호를 포함해 소괄호(), 대괄호[], 중괄호{}, 전각 괄호（）【】 내부 텍스트 완전 제거
   let prev = "";
@@ -663,6 +668,9 @@ const cleanTextForTTS = (text: string): string => {
       .replace(/\{[^{}]*\}/g, "")
       .replace(/<[^<>]*>/g, "");
   }
+
+  // 앞부분에 남은 orphaned 닫는 괄호/지문 기호 제거 (청크 분할 시 잔여 지문 방어)
+  cleaned = cleaned.replace(/^[^([（【{]*[)\]）】}]/g, "");
 
   // 닫히지 않은 채로 남은 여는 괄호 이후 텍스트 및 잔여 괄호 기호 제거
   cleaned = cleaned

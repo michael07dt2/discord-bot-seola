@@ -308,6 +308,13 @@ const extractModelCommand = (
   return null;
 };
 
+// 괄호가 열린 채로 아직 닫히지 않았는지 확인 (괄호 내부 쉼표/구두점에 의한 오분할 방지)
+const hasUnclosedParen = (str: string): boolean => {
+  const openCount = (str.match(/[\(\[\{（【]/g) || []).length;
+  const closeCount = (str.match(/[\)\]\}）】]/g) || []).length;
+  return openCount > closeCount;
+};
+
 // LLM 토큰 스트리밍 중 문장 종결부호(. ! ? … ~ \n) 단위로 즉시 콜백을 호출하는 헬퍼 (TTFA 최적화)
 const streamCompletionWithSentences = async (
   model: string,
@@ -336,6 +343,21 @@ const streamCompletionWithSentences = async (
     let unread = visibleContent.slice(emittedLength);
 
     while (unread.length > 0) {
+      // 1) 앞부분에 있는 괄호 지문((지문), **(지문)**, *지문* 등)은 문장으로 읽지 않고 즉시 스킵
+      const leadingActionMatch = unread.match(
+        /^\s*(?:\*\*\s*\([^)]*\)\s*\*\*|\*\*\s*\[[^\]]*\]\s*\*\*|\*\*[^*]+\*\*|\*[^*]+\*|\([^()]*\)|\[[^[\]]*\]|\{[^{}]*\}|（[^（）]*）|【[^【】]*】)\s*/,
+      );
+      if (leadingActionMatch) {
+        emittedLength += leadingActionMatch[0].length;
+        unread = visibleContent.slice(emittedLength);
+        continue;
+      }
+
+      // 2) 아직 닫히지 않은 괄호 지문이 시작된 상태라면 닫힐 때까지 대기
+      if (/^\s*(?:\*\*\s*\(|\(|\[|\{|（|【)/.test(unread) && !isFinal) {
+        return;
+      }
+
       // 마침표/물음표/느낌표/말줄임표/물결표 뒤 공백이나 줄바꿈, 혹은 줄바꿈 자체를 문장 경계로 인식
       const boundaryMatch = unread.match(
         /^([\s\S]+?(?:[.!?…~](?=\s|$)|(?=\n)))(\s+|\n+)/,
@@ -344,6 +366,11 @@ const streamCompletionWithSentences = async (
       if (boundaryMatch && boundaryMatch[1]) {
         const candidate = boundaryMatch[1].trim();
         const consumed = boundaryMatch[0].length;
+
+        // 괄호 내부의 구두점(예: (매우 부드럽고 다정한 목소리로, ...))에 걸린 경우 괄호가 닫힐 때까지 보류
+        if (hasUnclosedParen(candidate) && !isFinal) {
+          break;
+        }
 
         // TTFA(Time-to-First-Audio) 극대화: 첫 번째 문장은 3자 이상이면 즉각 방출, 이후 문장은 6자 이상 시 방출
         const minLength = emittedSentenceCount === 0 ? 3 : 6;
@@ -362,6 +389,11 @@ const streamCompletionWithSentences = async (
         if (earlyClauseMatch && earlyClauseMatch[1]) {
           const candidate = earlyClauseMatch[1].trim();
           const consumed = earlyClauseMatch[0].length;
+
+          if (hasUnclosedParen(candidate) && !isFinal) {
+            break;
+          }
+
           emittedLength += consumed;
           emittedSentenceCount++;
           unread = visibleContent.slice(emittedLength);
@@ -375,6 +407,11 @@ const streamCompletionWithSentences = async (
       if (clauseMatch && clauseMatch[1]) {
         const candidate = clauseMatch[1].trim();
         const consumed = clauseMatch[0].length;
+
+        if (hasUnclosedParen(candidate) && !isFinal) {
+          break;
+        }
+
         emittedLength += consumed;
         emittedSentenceCount++;
         unread = visibleContent.slice(emittedLength);
@@ -386,7 +423,11 @@ const streamCompletionWithSentences = async (
     }
 
     if (isFinal) {
-      const remaining = visibleContent.slice(emittedLength).trim();
+      let remaining = visibleContent.slice(emittedLength).trim();
+      // 마지막 잔여 텍스트에서도 지문/괄호 블록 제거
+      remaining = remaining
+        .replace(/^\s*(?:\*\*\s*\([^)]*\)\s*\*\*|\*\*[^*]+\*\*|\*[^*]+\*|\([^()]*\)|\[[^[\]]*\]|（[^（）]*）|【[^【】]*】)\s*/g, "")
+        .trim();
       emittedLength = visibleContent.length;
       if (remaining) {
         emittedSentenceCount++;
@@ -528,8 +569,8 @@ export const generateAIResponse = async (
     ? `\n\n# Voice Call Mode (실시간 음성 통화 모드 - 최우선 절대 규칙)
 - 현재 텍스트 메신저가 아니라 디스코드 음성 채널에서 실시간 목소리로 통화 중이다.
 - [답변 길이 엄격 제한]: 답변은 반드시 1문장(최대 2문장), 공백 포함 40자 이내로 매우 짧고 간결하게 대답한다.
-- 긴 설명, 나열식 답변, 장황한 부연설명은 절대로 하지 않는다. 실제 전화 통화하듯 한마디로 짧고 확실하게 끝맺는다.
-- TTS(음성 합성)로 바로 읽히므로 괄호 지문이나 부연 설명((웃음), (장난스럽게), [미소] 등 모든 괄호 표현), 'ㅋㅋ', 'ㅎㅎ', 'ㅠㅠ', 'ㅜㅜ', 이모티콘, 마크다운 기호를 절대 쓰지 말고, 실제로 소리 내어 말할 대사만 자연스러운 한글 구어체로 짧게 답한다.${multiPersonConstraint}`
+- [괄호/지문/행동묘사 절대 금지]: TTS(음성 합성 엔진)가 그대로 소리 내어 읽으므로, 어조 지문, 표정 지문, 행동 묘사, 괄호 표현(예: (웃으며), (다정하게), **(목소리로 대답한다)**, [미소], *미소*)을 단 한 글자도 출력하지 마라.
+- 'ㅋㅋ', 'ㅎㅎ', 'ㅠㅠ', 'ㅜㅜ', 이모티콘, 마크다운 기호를 절대 쓰지 말고, 실제로 입으로 발음하여 소리 낼 한국어 대사만 바로 출력한다.${multiPersonConstraint}`
     : "";
 
   const systemPromptContent = personaDef.buildPrompt({
