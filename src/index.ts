@@ -61,8 +61,8 @@ import {
   releaseProcessLock,
 } from "./util/processLock.ts";
 
-// 0. 단일 인스턴스 락 확인 (이미 실행 중인 프로세스가 있는지 사전 검사)
-const lock = checkAndAcquireProcessLock();
+// 0. 단일 인스턴스 락 확인 (이미 실행 중인 프로세스가 있는지 사전 검사 및 안전한 인계)
+const lock = checkAndAcquireProcessLock({ killExisting: true });
 if (!lock.success) {
   process.exit(1);
 }
@@ -133,7 +133,14 @@ discordClient.once(Events.ClientReady, async (readyClient) => {
 // 슬래시 명령어(Interaction) 처리
 discordClient.on(Events.InteractionCreate, async (interaction) => {
   if (!interaction.isChatInputCommand()) return;
-  await handleSlashCommand(interaction);
+  console.log(
+    `[Interaction] ⚡ 슬래시 명령어 수신: /${interaction.commandName} (유저: ${interaction.user.tag})`,
+  );
+  try {
+    await handleSlashCommand(interaction);
+  } catch (err) {
+    console.error("[Interaction] 슬래시 명령어 처리 실패:", err);
+  }
 });
 
 // 2. 프리픽스 명령어 처리
@@ -705,9 +712,20 @@ const handleGracefulShutdown = async (signal: string) => {
     `\n[Process] ${signal} 시그널 수신. 모든 음성 채널 퇴장 및 안전한 종료 절차를 시작합니다...`,
   );
 
+  // 최대 1.2초 후에는 강제 종료되도록 타임아웃 안전장치 가동
+  const forceExitTimer = setTimeout(() => {
+    console.log("[Process] 타임아웃 도달: 프로세스를 즉시 종료합니다.");
+    releaseProcessLock();
+    process.exit(0);
+  }, 1200);
+  forceExitTimer.unref();
+
   try {
-    // 1) 모든 활성 음성 채널에서 퇴장
-    await leaveAllVoiceChannels();
+    // 1) 모든 활성 음성 채널에서 퇴장 (최대 600ms 대기)
+    await Promise.race([
+      leaveAllVoiceChannels(),
+      new Promise((resolve) => setTimeout(resolve, 600)),
+    ]);
 
     // 2) 디스코드 게이트웨이 세션 정리
     try {
@@ -718,9 +736,12 @@ const handleGracefulShutdown = async (signal: string) => {
     }
 
     // 3) Express 대시보드 서버 닫기
-    server.close(() => {
+    try {
+      server.close();
       console.log("[Process] Express 대시보드 서버를 정상 종료했습니다.");
-    });
+    } catch {
+      // 무시
+    }
 
     // 4) PID 락 파일 해제
     releaseProcessLock();

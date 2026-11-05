@@ -360,6 +360,8 @@ export const handleSlashCommand = async (
     (interaction.member as GuildMember)?.displayName ||
     interaction.user.username;
 
+  console.log(`[SlashCommands] 📥 슬래시 명령어 수신: /${commandName} (유저: ${userName})`);
+
   // 1. 디스코드 3초 타임아웃("The application didn't respond in time")을 원천 방지하기 위해 진입 즉시 지연 응답 등록
   try {
     if (!interaction.deferred && !interaction.replied) {
@@ -809,6 +811,12 @@ export const handleSlashCommand = async (
       await interaction.editReply({ embeds: [embed] });
       return;
     }
+
+    // 처리되지 않은 알 수 없는 명령어 폴백
+    console.warn(`[SlashCommands] ⚠️ 정의되지 않았거나 처리되지 않은 명령어: /${commandName}`);
+    await interaction.editReply({
+      content: `알 수 없는 명령어입니다: \`/${commandName}\`. \`/help\`를 확인해주세요.`,
+    });
   } catch (error: any) {
     console.error(`[SlashCommands] /${commandName} 처리 중 오류:`, error);
     try {

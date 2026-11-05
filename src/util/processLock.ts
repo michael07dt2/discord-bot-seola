@@ -26,11 +26,7 @@ export const checkAndAcquireProcessLock = (options?: {
 }): { success: boolean; pid: number } => {
   const currentPid = process.pid;
   const shouldKillExisting =
-    options?.killExisting ||
-    process.argv.includes("--force") ||
-    process.argv.includes("--restart") ||
-    process.env.AUTO_KILL_EXISTING === "true" ||
-    process.env.RESTARTING === "true";
+    options?.killExisting ?? true; // 기본값: 이전 인스턴스가 남아있으면 안전하게 정리 후 락 획득
 
   if (fs.existsSync(PID_FILE)) {
     try {
@@ -41,26 +37,13 @@ export const checkAndAcquireProcessLock = (options?: {
         if (isProcessRunning(existingPid)) {
           if (shouldKillExisting) {
             console.log(
-              `[ProcessLock] 🔄 기존에 실행 중이던 프로세스(PID: ${existingPid})를 감지했습니다. 종료를 요청합니다...`,
+              `[ProcessLock] 🔄 기존에 실행 중이던 프로세스(PID: ${existingPid})를 감지했습니다. 안전하게 종료하고 인계받습니다...`,
             );
             try {
               process.kill(existingPid, "SIGTERM");
-              // 1.5초 정도 프로세스 종료 대기
-              let waitedMs = 0;
-              while (isProcessRunning(existingPid) && waitedMs < 2000) {
-                const start = Date.now();
-                while (Date.now() - start < 100) {} // busy wait short period
-                waitedMs += 100;
-              }
-              if (isProcessRunning(existingPid)) {
-                process.kill(existingPid, "SIGKILL");
-              }
-              console.log(
-                `[ProcessLock] ✅ 기존 프로세스(PID: ${existingPid})가 안전하게 종료되었습니다.`,
-              );
             } catch (killErr) {
               console.warn(
-                `[ProcessLock] 기존 프로세스 종료 중 예외 발생:`,
+                `[ProcessLock] 기존 프로세스 종료 요청 중 예외:`,
                 killErr,
               );
             }
@@ -69,10 +52,7 @@ export const checkAndAcquireProcessLock = (options?: {
               `\n❌ [ProcessLock] 오류: 이미 Seola 봇 프로세스가 실행 중입니다! (PID: ${existingPid})`,
             );
             console.error(
-              `[ProcessLock] 중복 실행으로 인한 포트 충돌 및 디스코드 세션 유실을 방지하기 위해 기동을 중단합니다.`,
-            );
-            console.error(
-              `[ProcessLock] 기존 프로세스를 재시작하려면 '--restart' 플래그를 붙이거나 기존 PID를 종료해주세요.\n`,
+              `[ProcessLock] 중복 실행으로 인한 포트 충돌 및 디스코드 세션 유실을 방지하기 위해 기동을 중단합니다.\n`,
             );
             return { success: false, pid: existingPid };
           }
