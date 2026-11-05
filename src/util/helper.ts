@@ -302,6 +302,84 @@ const extractModelCommand = (
   return null;
 };
 
+// LLM 토큰 스트리밍 중 문장 종결부호(. ! ? … ~ \n) 단위로 즉시 콜백을 호출하는 헬퍼
+const streamCompletionWithSentences = async (
+  model: string,
+  messages: ChatCompletionMessageParam[],
+  onSentence: (sentence: string) => void,
+): Promise<string> => {
+  const stream = await openAiClient.chat.completions.create({
+    model,
+    messages,
+    stream: true,
+  });
+
+  let rawContent = "";
+  let emittedLength = 0;
+
+  const flushCompleteSentences = (isFinal: boolean) => {
+    // <think> 태그가 열려 있고 아직 닫히지 않았다면 대기
+    if (/<think>(?![\s\S]*<\/think>)/i.test(rawContent)) {
+      return;
+    }
+
+    const visibleContent = rawContent.replace(/<think>[\s\S]*?<\/think>/gi, "");
+    let unread = visibleContent.slice(emittedLength);
+
+    while (unread.length > 0) {
+      // 마침표/물음표/느낌표/말줄임표/물결표 뒤 공백이나 줄바꿈, 혹은 줄바꿈 자체를 문장 경계로 인식
+      const boundaryMatch = unread.match(
+        /^([\s\S]+?(?:[.!?…~](?=\s|$)|(?=\n)))(\s+|\n+)/,
+      );
+
+      if (boundaryMatch && boundaryMatch[1]) {
+        const candidate = boundaryMatch[1].trim();
+        const consumed = boundaryMatch[0].length;
+
+        // 너무 짧은 감탄사("응!", "헐,")는 뒷문장과 자연스럽게 이어지도록 최소 6자 이상일 때만 분할 방출
+        if (candidate.length >= 6) {
+          emittedLength += consumed;
+          unread = visibleContent.slice(emittedLength);
+          onSentence(candidate);
+          continue;
+        }
+      }
+
+      // 구두점 없이 문장이 60자 이상 길어지고 쉼표(,) 뒤 공백이 나오면 절 단위로 조기 분할
+      const clauseMatch = unread.match(/^([\s\S]{35,90}?,)(\s+)/);
+      if (clauseMatch && clauseMatch[1]) {
+        const candidate = clauseMatch[1].trim();
+        const consumed = clauseMatch[0].length;
+        emittedLength += consumed;
+        unread = visibleContent.slice(emittedLength);
+        onSentence(candidate);
+        continue;
+      }
+
+      break;
+    }
+
+    if (isFinal) {
+      const remaining = visibleContent.slice(emittedLength).trim();
+      emittedLength = visibleContent.length;
+      if (remaining) {
+        onSentence(remaining);
+      }
+    }
+  };
+
+  for await (const chunk of stream) {
+    const delta = chunk.choices[0]?.delta?.content;
+    if (delta) {
+      rawContent += delta;
+      flushCompleteSentences(false);
+    }
+  }
+
+  flushCompleteSentences(true);
+  return rawContent.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
+};
+
 export const generateAIResponse = async (
   userName: string,
   rawMessage: string,
@@ -310,6 +388,7 @@ export const generateAIResponse = async (
     isMultiPersonVoice?: boolean;
     humanMemberCount?: number;
     channel?: SendableChannels | null;
+    onSentence?: (sentence: string) => void;
   },
 ): Promise<string | null> => {
   const userMessage = rawMessage.trim();
@@ -464,17 +543,33 @@ Assistant: 갑자기 뚱딴지같이 무슨 소리야 ㅋㅋ 더위 먹었어? �
       explicitToolIntent.args,
       toolContext,
     );
-    const completion = await openAiClient.chat.completions.create({
-      model: selectedModel,
-      messages: [
-        ...baseMessages,
-        {
-          role: "developer",
-          content: `[도구(${explicitToolIntent.name}) 실행 완료 결과]\n${toolResult}\n\n위 도구 실행 결과를 바탕으로 사용자에게 설아의 다정한 반말 톤으로 자연스럽게 답변해줘.`,
-        },
-      ],
-    });
-    responseContent = completion.choices[0]?.message.content;
+    const toolMessages: ChatCompletionMessageParam[] = [
+      ...baseMessages,
+      {
+        role: "developer",
+        content: `[도구(${explicitToolIntent.name}) 실행 완료 결과]\n${toolResult}\n\n위 도구 실행 결과를 바탕으로 사용자에게 설아의 다정한 반말 톤으로 자연스럽게 답변해줘.`,
+      },
+    ];
+    if (options?.onSentence) {
+      responseContent = await streamCompletionWithSentences(
+        selectedModel,
+        toolMessages,
+        options.onSentence,
+      );
+    } else {
+      const completion = await openAiClient.chat.completions.create({
+        model: selectedModel,
+        messages: toolMessages,
+      });
+      responseContent = completion.choices[0]?.message.content;
+    }
+  } else if (options?.onSentence) {
+    // 실시간 음성 통화 모드: 첫 문장이 생성되는 즉시 TTS 파이프라인으로 스트리밍 전달하여 응답 지연 최소화
+    responseContent = await streamCompletionWithSentences(
+      selectedModel,
+      baseMessages,
+      options.onSentence,
+    );
   } else {
     // 일반 대화 중 LLM이 자율적으로 도구(web_search 등) 호출 여부를 판단하도록 Function Calling 시도
     try {

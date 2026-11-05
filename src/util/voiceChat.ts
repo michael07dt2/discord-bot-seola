@@ -29,6 +29,11 @@ import {
   recordVoiceTranscript,
   type ActiveVoiceSessionStatus,
 } from "./dashboard.ts";
+import {
+  preloadMeloTTSModel,
+  splitTextIntoSentences,
+  synthesizeMeloSentence,
+} from "./meloTts.ts";
 
 const { OpusEncoder } = opus;
 
@@ -43,11 +48,16 @@ const MIN_SPEECH_SECONDS = 0.45;
 const MAX_SPEECH_SECONDS = 30.0;
 const MIN_RMS_THRESHOLD = 0.008;
 
-// TTS 목소리 프리셋 정의
+// TTS 목소리 프리셋 정의 (기본 엔진: 로컬 한국어 전용 신경망 모델 MeloTTS-Korean)
 export interface VoicePreset {
   id: string;
   label: string;
   description: string;
+  engine: "melotts" | "edge";
+  meloSpeed?: number;
+  meloNoiseScale?: number;
+  meloNoiseScaleW?: number;
+  meloSdpRatio?: number;
   voiceName: string;
   voiceLocale: string;
   pitch: string;
@@ -55,88 +65,117 @@ export interface VoicePreset {
 }
 
 export const VOICE_PRESETS: Record<string, VoicePreset> = {
-  ava: {
-    id: "ava",
-    label: "아바 (자연스러운 대화형 - 기본)",
-    description: "가장 자연스럽고 부드러운 20대 여성 대화 톤 (Ava Multilingual)",
-    voiceName: "en-US-AvaMultilingualNeural",
+  seola: {
+    id: "seola",
+    label: "설아 (MeloTTS 한국어 기본)",
+    description:
+      "한국어 전용 신경망(MeloTTS-Korean) 기반의 가장 자연스러운 억양과 호흡 (기본값)",
+    engine: "melotts",
+    meloSpeed: 1.06,
+    meloNoiseScale: 0.6,
+    meloNoiseScaleW: 0.8,
+    meloSdpRatio: 0.2,
+    voiceName: "ko-KR-SunHiNeural",
     voiceLocale: "ko-KR",
     pitch: "+0Hz",
     rate: "+0%",
   },
-  seola: {
-    id: "seola",
-    label: "설아 (밝고 경쾌한 톤)",
-    description: "한국어 전용 음성에 밝은 톤을 더한 목소리 (SunHi 밝은 톤)",
+  melo: {
+    id: "melo",
+    label: "멜로 (MeloTTS 정석 톤)",
+    description:
+      "MeloTTS-Korean 정속(1.0x) 기반의 차분하고 또렷한 한국어 음성",
+    engine: "melotts",
+    meloSpeed: 1.0,
+    meloNoiseScale: 0.58,
+    meloNoiseScaleW: 0.8,
+    meloSdpRatio: 0.2,
+    voiceName: "ko-KR-SunHiNeural",
+    voiceLocale: "ko-KR",
+    pitch: "+0Hz",
+    rate: "+0%",
+  },
+  lively: {
+    id: "lively",
+    label: "설아 발랄톤 (MeloTTS 경쾌)",
+    description:
+      "MeloTTS-Korean 기반에 템포와 억양 변화를 살린 통통 튀는 밝은 톤",
+    engine: "melotts",
+    meloSpeed: 1.14,
+    meloNoiseScale: 0.667,
+    meloNoiseScaleW: 0.85,
+    meloSdpRatio: 0.3,
     voiceName: "ko-KR-SunHiNeural",
     voiceLocale: "ko-KR",
     pitch: "+10Hz",
     rate: "+5%",
   },
-  sunhi: {
-    id: "sunhi",
-    label: "선희 (차분한 한국어 기본)",
-    description: "가장 또렷하고 안정적인 한국어 여성 음성 (SunHi 기본)",
+  calm: {
+    id: "calm",
+    label: "설아 차분톤 (MeloTTS 나긋)",
+    description:
+      "MeloTTS-Korean 기반의 조금 느리고 부드러운 나긋나긋한 대화 톤",
+    engine: "melotts",
+    meloSpeed: 0.96,
+    meloNoiseScale: 0.52,
+    meloNoiseScaleW: 0.75,
+    meloSdpRatio: 0.15,
     voiceName: "ko-KR-SunHiNeural",
     voiceLocale: "ko-KR",
     pitch: "+0Hz",
     rate: "+0%",
   },
-  emma: {
-    id: "emma",
-    label: "엠마 (차분하고 따뜻한 톤)",
-    description: "차분하고 나긋나긋한 여성 대화 톤 (Emma Multilingual)",
-    voiceName: "en-US-EmmaMultilingualNeural",
+  ava: {
+    id: "ava",
+    label: "아바 (Edge 다국어 음성)",
+    description: "Microsoft Edge 신경망 다국어 여성 대화 톤 (Ava Multilingual)",
+    engine: "edge",
+    voiceName: "en-US-AvaMultilingualNeural",
     voiceLocale: "ko-KR",
     pitch: "+0Hz",
     rate: "+0%",
   },
-  seraphina: {
-    id: "seraphina",
-    label: "세라피나 (맑고 또렷한 톤)",
-    description: "맑고 깨끗한 음색의 다국어 여성 음성 (Seraphina Multilingual)",
-    voiceName: "de-DE-SeraphinaMultilingualNeural",
-    voiceLocale: "ko-KR",
-    pitch: "+0Hz",
-    rate: "+0%",
-  },
-  vivienne: {
-    id: "vivienne",
-    label: "비비안 (부드러운 저음 톤)",
-    description: "차분하고 성숙한 분위기의 다국어 여성 음성 (Vivienne Multilingual)",
-    voiceName: "fr-FR-VivienneMultilingualNeural",
+  sunhi: {
+    id: "sunhi",
+    label: "선희 (Edge 한국어 음성)",
+    description: "Microsoft Edge 한국어 전용 여성 음성 (SunHi Neural)",
+    engine: "edge",
+    voiceName: "ko-KR-SunHiNeural",
     voiceLocale: "ko-KR",
     pitch: "+0Hz",
     rate: "+0%",
   },
 };
 
-// 현재 선택된 목소리 프리셋 (기본값: 가장 자연스러운 대화형인 ava)
+// 현재 선택된 목소리 프리셋 (기본값: 한국어 억양이 가장 자연스러운 MeloTTS-Korean 기반 'seola')
 let currentVoicePresetKey: string =
   process.env.TTS_PRESET && VOICE_PRESETS[process.env.TTS_PRESET]
     ? process.env.TTS_PRESET
-    : "ava";
+    : "seola";
 
 export const getCurrentVoicePreset = (): VoicePreset => {
-  return VOICE_PRESETS[currentVoicePresetKey] ?? VOICE_PRESETS["ava"]!;
+  return VOICE_PRESETS[currentVoicePresetKey] ?? VOICE_PRESETS["seola"]!;
 };
 
 export const setVoicePreset = (input: string): VoicePreset | null => {
   const key = input.trim().toLowerCase();
   const aliasMap: Record<string, string> = {
-    아바: "ava",
-    ava: "ava",
-    기본: "ava",
     설아: "seola",
     seola: "seola",
+    기본: "seola",
+    멜로: "melo",
+    melo: "melo",
+    melotts: "melo",
+    발랄: "lively",
+    경쾌: "lively",
+    lively: "lively",
+    차분: "calm",
+    나긋: "calm",
+    calm: "calm",
+    아바: "ava",
+    ava: "ava",
     선희: "sunhi",
     sunhi: "sunhi",
-    엠마: "emma",
-    emma: "emma",
-    세라피나: "seraphina",
-    seraphina: "seraphina",
-    비비안: "vivienne",
-    vivienne: "vivienne",
   };
 
   const resolvedKey = aliasMap[key] || (VOICE_PRESETS[key] ? key : undefined);
@@ -187,10 +226,13 @@ interface GuildVoiceSession {
 const guildSessions = new Map<string, GuildVoiceSession>();
 
 /**
- * 로컬 Whisper STT 파이프라인 싱글톤 로드
+ * 로컬 Whisper STT 및 MeloTTS-Korean 파이프라인 싱글톤 사전 로드
  */
 export const preloadWhisperModel =
   async (): Promise<AutomaticSpeechRecognitionPipeline> => {
+    // MeloTTS-Korean 로컬 모델도 함께 워밍업
+    preloadMeloTTSModel().catch(() => {});
+
     if (!transcriberPromise) {
       console.log(
         `[VoiceChat] 로컬 Whisper STT 모델 로드 중... (${WHISPER_MODEL})`,
@@ -367,19 +409,22 @@ const cleanTextForTTS = (text: string): string => {
     .trim();
 };
 
-/**
- * Edge TTS를 이용해 텍스트를 고음질(96kbps MP3) 스트림으로 합성
- * - 기존 WEBM_24KHZ_16BIT_MONO_OPUS + StreamType.WebmOpus 조합은 Discord의 48kHz 2채널 규격과 맞지 않아 음질이 깨지는 문제가 있었음.
- * - AUDIO_24KHZ_96KBITRATE_MONO_MP3 + StreamType.Arbitrary를 사용하여 FFmpeg가 48kHz 2채널 Stereo Opus로 깨끗하게 리샘플링하도록 개선.
- */
-export const synthesizeSpeechResource = async (
-  rawText: string,
-): Promise<{
+export interface SynthesizedSpeechResource {
   streamOrPath: Readable | string;
   inputType: StreamType;
   tempFilePath?: string;
   cleanup?: () => void;
-} | null> => {
+}
+
+/**
+ * 단일 문장을 TTS 오디오 리소스로 합성
+ * - 1순위(기본): 로컬 한국어 전용 신경망 MeloTTS-Korean (44.1kHz 16-bit WAV 인메모리 스트림)
+ * - 2순위(폴백/Edge 프리셋): Microsoft Edge 신경망 TTS (96kbps MP3)
+ * - 3순위(오프라인 폴백): macOS 내장 `say` (Yuna)
+ */
+export const synthesizeSpeechResource = async (
+  rawText: string,
+): Promise<SynthesizedSpeechResource | null> => {
   const speakableText = cleanTextForTTS(rawText);
   if (!speakableText) {
     return null;
@@ -387,7 +432,36 @@ export const synthesizeSpeechResource = async (
 
   const preset = getCurrentVoicePreset();
 
-  // 1차 시도: Microsoft Edge 신경망 TTS (고음질 96kbps MP3 -> FFmpeg 48kHz Stereo 리샘플링)
+  // 1차: 로컬 MeloTTS-Korean 엔진 (한국어 억양/장단음 최적화)
+  if (preset.engine === "melotts") {
+    try {
+      const meloResult = await synthesizeMeloSentence(speakableText, {
+        ...(preset.meloSpeed !== undefined ? { speed: preset.meloSpeed } : {}),
+        ...(preset.meloNoiseScale !== undefined
+          ? { noiseScale: preset.meloNoiseScale }
+          : {}),
+        ...(preset.meloNoiseScaleW !== undefined
+          ? { noiseScaleW: preset.meloNoiseScaleW }
+          : {}),
+        ...(preset.meloSdpRatio !== undefined
+          ? { sdpRatio: preset.meloSdpRatio }
+          : {}),
+      });
+      if (meloResult) {
+        return {
+          streamOrPath: meloResult.stream,
+          inputType: StreamType.Arbitrary,
+        };
+      }
+    } catch (meloError) {
+      console.warn(
+        "[VoiceChat] MeloTTS-Korean 합성 실패, Edge TTS로 폴백합니다:",
+        meloError,
+      );
+    }
+  }
+
+  // 2차: Microsoft Edge 신경망 TTS (고음질 96kbps MP3 -> FFmpeg 48kHz Stereo 리샘플링)
   try {
     const tts = new MsEdgeTTS();
     await tts.setMetadata(
@@ -418,7 +492,7 @@ export const synthesizeSpeechResource = async (
     );
   }
 
-  // 2차 폴백: macOS 내장 `say` 명령어로 임시 오디오 파일 생성
+  // 3차 폴백: macOS 내장 `say` 명령어로 임시 오디오 파일 생성
   if (process.platform === "darwin") {
     const tempFile = path.join(
       os.tmpdir(),
@@ -444,7 +518,109 @@ export const synthesizeSpeechResource = async (
 };
 
 /**
- * 합성된 TTS 음성을 디스코드 음성 채널에서 재생하고 완료될 때까지 대기
+ * 문장 단위 스트리밍 합성 및 순차 재생 파이프라인 생성
+ * - 문장이 들어오는 즉시 백그라운드에서 MeloTTS-Korean 합성을 선행(Prefetch) 시작하고,
+ *   첫 문장 합성이 완료되는 즉시 AudioPlayer에서 재생을 시작하여 체감 지연시간을 최소화합니다.
+ * - 앞 문장이 재생되는 동안 뒷 문장이 백그라운드에서 미리 합성되므로 문장 간 끊김 없이 이어집니다.
+ */
+export const createSentenceSpeechPipeline = (
+  connection: VoiceConnection,
+  player: AudioPlayer,
+  guildId: string,
+) => {
+  const synthesisQueue: Promise<SynthesizedSpeechResource | null>[] = [];
+  let isFinished = false;
+  let wakeConsumer: (() => void) | null = null;
+  let hasStartedPlayback = false;
+
+  const notifyQueueUpdated = () => {
+    if (wakeConsumer) {
+      const wake = wakeConsumer;
+      wakeConsumer = null;
+      wake();
+    }
+  };
+
+  const consumerPromise = (async () => {
+    try {
+      while (true) {
+        if (synthesisQueue.length === 0) {
+          if (isFinished) break;
+          await new Promise<void>((resolve) => {
+            wakeConsumer = resolve;
+          });
+          continue;
+        }
+
+        const nextSynthTask = synthesisQueue.shift()!;
+        const ttsResult = await nextSynthTask;
+        if (!ttsResult) continue;
+
+        if (!hasStartedPlayback) {
+          hasStartedPlayback = true;
+          setGuildPlaybackMode(guildId, "tts");
+          connection.subscribe(player);
+        }
+
+        try {
+          const resource = createAudioResource(ttsResult.streamOrPath, {
+            inputType: ttsResult.inputType,
+          });
+
+          player.play(resource);
+          await entersState(player, AudioPlayerStatus.Playing, 5_000);
+          await entersState(player, AudioPlayerStatus.Idle, 60_000);
+        } catch (error) {
+          console.error("[VoiceChat] 문장 단위 TTS 오디오 재생 중 오류:", error);
+        } finally {
+          ttsResult.cleanup?.();
+          if (
+            ttsResult.tempFilePath &&
+            fs.existsSync(ttsResult.tempFilePath)
+          ) {
+            fs.unlink(ttsResult.tempFilePath, () => {});
+          }
+        }
+      }
+    } finally {
+      const session = guildSessions.get(guildId);
+      if (session && session.playbackMode === "tts") {
+        session.playbackMode = "idle";
+      }
+    }
+  })();
+
+  const enqueueSentence = (rawSentence: string): void => {
+    const cleaned = cleanTextForTTS(rawSentence);
+    if (!cleaned) return;
+
+    // 한 번에 여러 문장이 들어온 경우에도 문장 단위로 쪼개어 순차 합성 큐에 등록
+    const subSentences = splitTextIntoSentences(cleaned);
+    for (const sentence of subSentences) {
+      if (!sentence) continue;
+      const synthPromise = synthesizeSpeechResource(sentence).catch((err) => {
+        console.error("[VoiceChat] 문장 합성 오류:", err);
+        return null;
+      });
+      synthesisQueue.push(synthPromise);
+    }
+    notifyQueueUpdated();
+  };
+
+  const finish = async (): Promise<void> => {
+    isFinished = true;
+    notifyQueueUpdated();
+    await consumerPromise;
+  };
+
+  return {
+    enqueueSentence,
+    finish,
+  };
+};
+
+/**
+ * 텍스트를 문장 단위로 분할하여 합성되는 즉시 디스코드 음성 채널에서 순차 재생
  */
 export const speakInVoiceChannel = async (
   connection: VoiceConnection,
@@ -452,33 +628,13 @@ export const speakInVoiceChannel = async (
   guildId: string,
   text: string,
 ): Promise<void> => {
-  const ttsResult = await synthesizeSpeechResource(text);
-  if (!ttsResult) return;
-
-  setGuildPlaybackMode(guildId, "tts");
-
-  try {
-    const resource = createAudioResource(ttsResult.streamOrPath, {
-      inputType: ttsResult.inputType,
-    });
-
-    player.play(resource);
-    connection.subscribe(player);
-
-    await entersState(player, AudioPlayerStatus.Playing, 5_000);
-    await entersState(player, AudioPlayerStatus.Idle, 60_000);
-  } catch (error) {
-    console.error("[VoiceChat] TTS 오디오 재생 중 오류:", error);
-  } finally {
-    ttsResult.cleanup?.();
-    if (ttsResult.tempFilePath && fs.existsSync(ttsResult.tempFilePath)) {
-      fs.unlink(ttsResult.tempFilePath, () => {});
-    }
-    const session = guildSessions.get(guildId);
-    if (session && session.playbackMode === "tts") {
-      session.playbackMode = "idle";
-    }
-  }
+  const speechPipeline = createSentenceSpeechPipeline(
+    connection,
+    player,
+    guildId,
+  );
+  speechPipeline.enqueueSentence(text);
+  await speechPipeline.finish();
 };
 
 /**
@@ -583,9 +739,9 @@ export const setupVoiceChatListener = (params: {
     cleanup: () => {},
   };
 
-  // 플레이어가 Idle로 돌아올 때 재생 모드 초기화
+  // 음악 재생 종료로 플레이어가 Idle로 돌아올 때 재생 모드 초기화 (TTS 모드는 문장 파이프라인 종료 시점에 해제)
   const onPlayerIdle = () => {
-    if (session.playbackMode !== "idle") {
+    if (session.playbackMode === "music") {
       session.playbackMode = "idle";
     }
   };
@@ -776,16 +932,28 @@ export const setupVoiceChatListener = (params: {
             }
           }
 
-          // 4. 일반 AI 실시간 대화 응답 생성 및 TTS 발화 (채팅 채널에는 전송하지 않고 대시보드에만 기록)
+          // 4. 일반 AI 실시간 대화 응답 생성 및 문장 단위 스트리밍 TTS 발화 (채팅 채널에는 전송하지 않고 대시보드에만 기록)
           const promptText = stripSeolaWakeWord(transcribedText);
+          const speechPipeline = createSentenceSpeechPipeline(
+            connection,
+            player,
+            guildId,
+          );
+
           const aiReply = await generateAIResponse(userName, promptText, {
             isVoiceMode: true,
             isMultiPersonVoice: isMultiPersonChannel,
             humanMemberCount,
             channel: session.textChannel,
+            onSentence: (sentence) => {
+              speechPipeline.enqueueSentence(sentence);
+            },
           });
 
-          if (!aiReply) return;
+          if (!aiReply) {
+            await speechPipeline.finish();
+            return;
+          }
 
           console.log(`[VoiceChat] 💬 설아 -> ${userName}: ${aiReply}`);
 
@@ -799,7 +967,7 @@ export const setupVoiceChatListener = (params: {
             durationSec,
           });
 
-          await speakInVoiceChannel(connection, player, guildId, aiReply);
+          await speechPipeline.finish();
         })
         .catch((err) => {
           console.error("[VoiceChat] 음성 대화 처리 중 오류 발생:", err);

@@ -148,9 +148,9 @@ discordClient.on("messageCreate", async (message) => {
         {
           name: `🗣️ 목소리(TTS) 설정 (현재: ${currentPreset.label})`,
           value: [
-            "`!voice` 또는 `!목소리` — 사용 가능한 목소리 프리셋 목록 확인",
+            "`!voice` 또는 `!목소리` — 사용 가능한 목소리 프리셋 목록 확인 (로컬 MeloTTS-Korean 기본 적용)",
             "`!voice <이름>` 또는 `!목소리 <이름>` — 설아 목소리 변경",
-            "지원 프리셋: `아바`(`ava`), `설아`(`seola`), `선희`(`sunhi`), `엠마`(`emma`), `세라피나`(`seraphina`), `비비안`(`vivienne`)",
+            "지원 프리셋: `설아`(`seola`), `멜로`(`melo`), `발랄`(`lively`), `차분`(`calm`), `아바`(`ava`), `선희`(`sunhi`)",
           ].join("\n"),
         },
         {
@@ -302,7 +302,7 @@ discordClient.on("messageCreate", async (message) => {
         .join("\n");
 
       await message.reply(
-        `🗣️ **현재 설아 목소리**: **${current.label}** (\`${current.id}\`)\n\n**사용 가능한 목소리 프리셋:**\n${presetLines}\n\n변경 방법: \`!목소리 아바\`, \`!목소리 설아\`, \`!목소리 엠마\` 등`,
+        `🗣️ **현재 설아 목소리**: **${current.label}** (\`${current.id}\`)\n\n**사용 가능한 목소리 프리셋:**\n${presetLines}\n\n변경 방법: \`!목소리 설아\`, \`!목소리 발랄\`, \`!목소리 차분\`, \`!목소리 멜로\` 등`,
       );
       return;
     }
@@ -313,7 +313,7 @@ discordClient.on("messageCreate", async (message) => {
         .map((k) => `\`${k}\``)
         .join(", ");
       await message.reply(
-        `\`${targetVoice}\` 목소리 프리셋을 찾을 수 없어요.\n선택 가능한 목소리: ${availableKeys} (또는 \`아바\`, \`설아\`, \`선희\`, \`엠마\`, \`세라피나\`, \`비비안\`)`,
+        `\`${targetVoice}\` 목소리 프리셋을 찾을 수 없어요.\n선택 가능한 목소리: ${availableKeys} (또는 \`설아\`, \`멜로\`, \`발랄\`, \`차분\`, \`아바\`, \`선희\`)`,
       );
       return;
     }
