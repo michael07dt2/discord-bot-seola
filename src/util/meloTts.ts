@@ -1,6 +1,6 @@
 import fs from "fs";
 import path from "path";
-import { Readable } from "stream";
+import { PassThrough, type Readable } from "stream";
 import ort from "onnxruntime-node";
 
 const MODEL_DIR = path.resolve(process.cwd(), "models", "melotts-kr");
@@ -340,7 +340,6 @@ const numberToNativeModifier = (n: number): string | null => {
  * 텍스트 내 숫자 표현을 자연스러운 한국어 발음으로 정규화
  */
 const normalizeKoreanNumbers = (text: string): string => {
-  // 1. 소수점 숫자 (예: 3.14 -> 삼점일사)
   let out = text.replace(
     /(\d+)\.(\d+)/g,
     (_, intPart: string, fracPart: string) => {
@@ -353,7 +352,6 @@ const normalizeKoreanNumbers = (text: string): string => {
     },
   );
 
-  // 2. 숫자 + 고유어 단위명사 (예: 1개 -> 한개, 2시 -> 두시, 20살 -> 스무살)
   out = out.replace(
     /(\d{1,2})\s*([가-힣]+)/g,
     (fullMatch, numStr: string, followingWord: string) => {
@@ -376,7 +374,6 @@ const normalizeKoreanNumbers = (text: string): string => {
     },
   );
 
-  // 3. 일반 정수 (예: 2026 -> 이천이십육)
   out = out.replace(/\d[\d,]*/g, (match) => numberToSinoKorean(match));
   return out;
 };
@@ -426,6 +423,37 @@ const COMPAT_TO_CHOSEONG: Record<string, string> = {
   ㅌ: "\u1110",
   ㅍ: "\u1111",
   ㅎ: "\u1112",
+};
+
+/**
+ * 관형사형 'ㄹ' + 의존명사(것, 거, 수, 데, 줄, 바, 리, 지, 뿐) 경음화 선처리
+ */
+const applyRieulBoundNounTensification = (text: string): string => {
+  return text
+    .replace(/([가-힣]+)\s+(것|거)(?=[가-힣\s.!?…~]|$)/g, (m, prev: string, noun: string) => {
+      if (prev.normalize("NFD").endsWith("ᆯ")) {
+        return `${prev} ${noun === "것" ? "껏" : "꺼"}`;
+      }
+      return m;
+    })
+    .replace(/([가-힣]+)\s+수(?=[가-힣\s.!?…~]|$)/g, (m, prev: string) => {
+      if (prev.normalize("NFD").endsWith("ᆯ")) {
+        return `${prev} 쑤`;
+      }
+      return m;
+    })
+    .replace(/([가-힣]+)\s+데(?=[가-힣\s.!?…~]|$)/g, (m, prev: string) => {
+      if (prev.normalize("NFD").endsWith("ᆯ")) {
+        return `${prev} 떼`;
+      }
+      return m;
+    })
+    .replace(/([가-힣]+)\s+줄(?=[가-힣\s.!?…~]|$)/g, (m, prev: string) => {
+      if (prev.normalize("NFD").endsWith("ᆯ")) {
+        return `${prev} 쭐`;
+      }
+      return m;
+    });
 };
 
 /**
@@ -600,12 +628,6 @@ const parseIdioms = (raw: string): G2PIdiomRule[] => {
   return rules;
 };
 
-/**
- * g2pkk/utils.py의 parse_table()과 동일하게 table.csv의 정규식 규칙을 파싱
- * - Python 3의 `\W`는 유니코드 비단어 문자(공백/구두점)만 매칭하므로,
- *   JavaScript RegExp에서는 한글 자모(`\u1100-\u11FF`)와 음절(`\uAC00-\uD7A3`)이 제외되도록 변환
- * - Python 역참조 `\1`을 JS `$1`로 변환하고 규칙 번호 `(12)`, `(9/23)` 등을 제거
- */
 const parseTableCsv = (raw: string): G2PTableRegexRule[] => {
   const lines = raw.split(/\r?\n/).filter(Boolean);
   if (lines.length < 2) return [];
@@ -680,8 +702,6 @@ export const preloadMeloTTSModel = async (): Promise<MeloTTSRuntime> => {
           fs.promises.readFile(IDIOMS_TXT_PATH, "utf-8"),
         ]);
 
-      // 중요: 모델 체크포인트와 정확히 일치하는 심볼 테이블은 melotts_kr_config.json의 symbols 배열을 사용해야 함
-      // (symbols.json은 '¡', '¿' 정렬 순서 차이로 인해 한국어 자모 인덱스가 2칸씩 밀려 있음)
       const configData = JSON.parse(configRaw) as MeloConfigData;
       const symbolsMeta = JSON.parse(symbolsRaw) as SymbolsMetaData;
 
@@ -713,47 +733,38 @@ export const preloadMeloTTSModel = async (): Promise<MeloTTSRuntime> => {
   return runtimePromise;
 };
 
-const PUNCTUATION_SET = new Set(["!", "?", "…", ",", ".", "'", "-"]);
-
 /**
- * 단일 어절(또는 문장 조각)에 대해 g2pkk 음운 변동 및 NFD 자모 변환 수행
+ * 단일 어절에 대해 g2pkk 음운 변동 및 NFD 자모 변환 수행
  */
 const koreanWordToPhonemes = (
   word: string,
   runtime: MeloTTSRuntime,
 ): string => {
-  // 단독 호환 자음(ㄱ~ㅎ)이 있으면 초성 자모로 변환 후 NFD 분해
   const replacedCompat = word.replace(
     /[ㄱ-ㅎ]/g,
     (ch) => COMPAT_TO_CHOSEONG[ch] || "",
   );
   let jamo = replacedCompat.normalize("NFD");
 
-  // 1. special.py 음운 규칙
   jamo = applyG2PSpecialRules(jamo);
-
-  // 2. table.csv 받침+초성 음운 변동 및 어말 7종성 중화 규칙
   for (const rule of runtime.tableRules) {
     jamo = jamo.replace(rule.regex, rule.replacement);
   }
-
-  // 3. regular.py 연음 법칙 및 초성 ᄋ 보충
   jamo = applyG2PLiaisonRules(jamo);
 
   return jamo;
 };
 
 /**
- * 한국어 문장을 MeloTTS-Korean 입력용 Jamo 음소 배열 및 토큰 시퀀스로 변환
+ * 텍스트 정규화 (특수기호, 관용구, 영문, 숫자, 관형사형 ㄹ 경음화)
  */
-const textToMeloSequence = (
-  rawSentence: string,
+const normalizeKoreanText = (
+  rawText: string,
   runtime: MeloTTSRuntime,
-): { phones: number[]; tones: number[]; langIds: number[] } | null => {
-  let text = rawSentence.trim();
-  if (!text) return null;
+): string => {
+  let text = rawText.trim();
+  if (!text) return "";
 
-  // 1. 한자 제거 및 특수 기호 치환
   text = text.replace(
     /[⺀-⺙⺛-⻳⼀-⿕々〇〡-〩〸-〺〻㐀-䶵一-鿃豈-鶴侮-頻並-龎]/g,
     "",
@@ -761,44 +772,39 @@ const textToMeloSequence = (
   for (const [k, v] of Object.entries(ETC_DICTIONARY)) {
     text = text.replaceAll(k, v);
   }
-
-  // 2. 관용구(idioms.txt) 치환
   for (const rule of runtime.idiomRules) {
     text = text.replaceAll(rule.pattern, rule.replacement);
   }
 
-  // 3. 영문 -> 한글 발음 변환
   text = normalizeEnglishToKorean(text);
-
-  // 4. 숫자 -> 한글 수사 변환
   text = normalizeKoreanNumbers(text);
+  text = applyRieulBoundNounTensification(text);
 
-  // 5. 물결표(~) 및 말줄임표 정규화
-  text = text
+  return text
     .replace(/~+/g, ",")
-    .replace(/\.{2,}|…+/g, "…")
-    .replace(/["""]/g, "")
-    .replace(/[''']/g, "'");
+    .replace(/\.{2,}|…+/g, ".")
+    .replace(/[""''"']/g, "");
+};
 
-  // 6. MeloTTS korean.py의 g2p()와 동일하게 구두점과 단어 토큰을 분리하여 각 단어별로 korean_text_to_phonemes 수행
-  const tokens =
-    text.match(/[가-힣ㄱ-ㅎㅏ-ㅣ]+|[!?…,.''-]/g)?.filter(Boolean) ?? [];
-  if (tokens.length === 0) return null;
+/**
+ * 단일 구절(Clause: 문장 내 구두점이 없는 순수 어절 묶음 + 종결부호 1개)을 토큰 시퀀스로 변환
+ * - 문장 중간에 `,`나 `!` 토큰이 들어가면 zero-BERT 상태에서 파열음/경음 노이즈("까", "찌")가 생기는 현상을 방지하기 위해
+ *   구절 내부에는 순수 한국어 자모만 배치하고 맨 끝에만 종결 구두점 토큰 1개를 부여합니다.
+ */
+const clauseToMeloSequence = (
+  clauseBody: string,
+  endPunctuation: "." | "?" | "!",
+  runtime: MeloTTSRuntime,
+): { phones: number[]; tones: number[]; langIds: number[] } | null => {
+  const words = clauseBody.match(/[가-힣ㄱ-ㅎㅏ-ㅣ]+/g)?.filter(Boolean) ?? [];
+  if (words.length === 0) return null;
 
   const { symbolToId, krLangId, krToneStart } = runtime;
   const startEndId = symbolToId["_"] ?? 0;
   const rawTokenIds: number[] = [startEndId];
 
-  for (const token of tokens) {
-    if (PUNCTUATION_SET.has(token)) {
-      const pid = symbolToId[token];
-      if (pid !== undefined) {
-        rawTokenIds.push(pid);
-      }
-      continue;
-    }
-
-    const phonemes = koreanWordToPhonemes(token, runtime);
+  for (const word of words) {
+    const phonemes = koreanWordToPhonemes(word, runtime);
     for (const ch of phonemes) {
       const id = symbolToId[ch];
       if (id !== undefined) {
@@ -807,13 +813,16 @@ const textToMeloSequence = (
     }
   }
 
-  rawTokenIds.push(startEndId);
-
-  if (rawTokenIds.length <= 2) {
+  if (rawTokenIds.length <= 1) {
     return null;
   }
 
-  // commons.intersperse(arr, 0): [0, t0, 0, t1, ..., 0]
+  const endPuncId = symbolToId[endPunctuation] ?? symbolToId["."];
+  if (endPuncId !== undefined) {
+    rawTokenIds.push(endPuncId);
+  }
+  rawTokenIds.push(startEndId);
+
   const phones: number[] = [0];
   const tones: number[] = [0];
   const langIds: number[] = [0];
@@ -828,12 +837,12 @@ const textToMeloSequence = (
 };
 
 /**
- * Float32Array(-1.0 ~ 1.0) 오디오 파형을 16-bit PCM WAV Buffer로 변환
+ * 구절 합성 파형의 앞뒤 불필요한 무음을 다듬어 반환
  */
-const float32ToWavBuffer = (
+const trimClauseWaveform = (
   samples: Float32Array,
   sampleRate: number = MELOTTS_SAMPLE_RATE,
-): Buffer => {
+): Float32Array => {
   const silenceThreshold = 0.003;
   let startIdx = 0;
   let endIdx = samples.length - 1;
@@ -851,17 +860,38 @@ const float32ToWavBuffer = (
     endIdx--;
   }
 
-  // 앞쪽 25ms, 뒤쪽 65ms 여백 유지
-  const padStart = Math.floor(sampleRate * 0.025);
-  const padEnd = Math.floor(sampleRate * 0.065);
+  const padStart = Math.floor(sampleRate * 0.02);
+  const padEnd = Math.floor(sampleRate * 0.085);
   startIdx = Math.max(0, startIdx - padStart);
   endIdx = Math.min(samples.length - 1, endIdx + padEnd);
 
-  const trimmedLength = Math.max(1, endIdx - startIdx + 1);
-  const dataByteLength = trimmedLength * 2;
+  return samples.slice(startIdx, endIdx + 1);
+};
+
+/**
+ * 구절별 파형들을 자연스러운 호흡 간격(140ms)과 끝 여백(380ms)을 두고 결합하여 16-bit PCM WAV Buffer로 변환
+ * - 끝 여백(380ms)이 충분해야 FFmpeg 및 Discord Opus 인코더가 문장 마지막 음절을 잘라먹지 않음
+ */
+const clauseWaveformsToWavBuffer = (
+  clauseChunks: Float32Array[],
+  sampleRate: number = MELOTTS_SAMPLE_RATE,
+): Buffer => {
+  const interClauseGap = new Float32Array(Math.floor(sampleRate * 0.14));
+  const tailSilence = new Float32Array(Math.floor(sampleRate * 0.38));
+
+  const segments: Float32Array[] = [];
+  clauseChunks.forEach((chunk, idx) => {
+    segments.push(chunk);
+    if (idx < clauseChunks.length - 1) {
+      segments.push(interClauseGap);
+    }
+  });
+  segments.push(tailSilence);
+
+  const totalSamples = segments.reduce((acc, cur) => acc + cur.length, 0);
+  const dataByteLength = totalSamples * 2;
   const wavBuffer = Buffer.allocUnsafe(44 + dataByteLength);
 
-  // RIFF WAV Header
   wavBuffer.write("RIFF", 0);
   wavBuffer.writeUInt32LE(36 + dataByteLength, 4);
   wavBuffer.write("WAVE", 8);
@@ -876,10 +906,14 @@ const float32ToWavBuffer = (
   wavBuffer.write("data", 36);
   wavBuffer.writeUInt32LE(dataByteLength, 40);
 
-  for (let i = 0; i < trimmedLength; i++) {
-    const s = Math.max(-1, Math.min(1, samples[startIdx + i]!));
-    const int16 = s < 0 ? Math.round(s * 32768) : Math.round(s * 32767);
-    wavBuffer.writeInt16LE(int16, 44 + i * 2);
+  let byteOffset = 44;
+  for (const seg of segments) {
+    for (let i = 0; i < seg.length; i++) {
+      const s = Math.max(-1, Math.min(1, seg[i]!));
+      const int16 = s < 0 ? Math.round(s * 32768) : Math.round(s * 32767);
+      wavBuffer.writeInt16LE(int16, byteOffset);
+      byteOffset += 2;
+    }
   }
 
   return wavBuffer;
@@ -889,77 +923,108 @@ const float32ToWavBuffer = (
 let inferenceQueue: Promise<unknown> = Promise.resolve();
 
 /**
- * 단일 한국어 문장을 MeloTTS-Korean으로 합성하여 인메모리 WAV Buffer(및 Readable 스트림)로 반환
+ * 한국어 문장을 구절(Clause) 단위로 정밀 합성하여 인메모리 WAV Buffer 및 바이너리 스트림으로 반환
  */
 export const synthesizeMeloSentence = async (
   sentence: string,
   options?: MeloSynthesizeOptions,
 ): Promise<{ wavBuffer: Buffer; stream: Readable } | null> => {
   const runtime = await preloadMeloTTSModel();
-  const seq = textToMeloSequence(sentence, runtime);
-  if (!seq) return null;
+  const normalized = normalizeKoreanText(sentence, runtime);
+  if (!normalized) return null;
 
-  const speed = options?.speed ?? 1.05;
+  // 문장 내 쉼표(,), 느낌표(!), 물음표(?), 마침표(.) 단위로 구절을 나누어 중간 구두점 아티팩트 원천 차단
+  const rawClauses = Array.from(
+    normalized.matchAll(/([^,!?.;:\n]+)([,!?.;:]?)/g),
+  )
+    .map((m) => ({
+      body: (m[1] || "").trim(),
+      punc: (m[2] || ".").trim(),
+    }))
+    .filter((c) => /[가-힣ㄱ-ㅎㅏ-ㅣ]/.test(c.body));
+
+  if (rawClauses.length === 0) return null;
+
+  const speed = options?.speed ?? 1.03;
   const lengthScale = 1.0 / Math.max(0.5, Math.min(2.0, speed));
-  const noiseScale = options?.noiseScale ?? 0.6;
-  const noiseScaleW = options?.noiseScaleW ?? 0.8;
+  const noiseScale = options?.noiseScale ?? 0.5;
+  const noiseScaleW = options?.noiseScaleW ?? 0.6;
   const sdpRatio = options?.sdpRatio ?? 0.2;
 
-  const T = seq.phones.length;
-
   const runTask = async (): Promise<Buffer | null> => {
-    const feeds: Record<string, ort.Tensor> = {
-      x: new ort.Tensor(
-        "int64",
-        BigInt64Array.from(seq.phones.map((n) => BigInt(n))),
-        [1, T],
-      ),
-      x_lengths: new ort.Tensor("int64", BigInt64Array.from([BigInt(T)]), [1]),
-      sid: new ort.Tensor("int64", BigInt64Array.from([0n]), [1]),
-      tone: new ort.Tensor(
-        "int64",
-        BigInt64Array.from(seq.tones.map((n) => BigInt(n))),
-        [1, T],
-      ),
-      language: new ort.Tensor(
-        "int64",
-        BigInt64Array.from(seq.langIds.map((n) => BigInt(n))),
-        [1, T],
-      ),
-      bert: new ort.Tensor("float32", new Float32Array(1024 * T), [
-        1,
-        1024,
-        T,
-      ]),
-      ja_bert: new ort.Tensor("float32", new Float32Array(768 * T), [
-        1,
-        768,
-        T,
-      ]),
-      noise_scale: new ort.Tensor("float32", Float32Array.from([noiseScale]), [
-        1,
-      ]),
-      length_scale: new ort.Tensor(
-        "float32",
-        Float32Array.from([lengthScale]),
-        [1],
-      ),
-      noise_scale_w: new ort.Tensor(
-        "float32",
-        Float32Array.from([noiseScaleW]),
-        [1],
-      ),
-      sdp_ratio: new ort.Tensor("float32", Float32Array.from([sdpRatio]), [1]),
-    };
+    const clauseWaveforms: Float32Array[] = [];
 
-    const output = await runtime.session.run(feeds);
-    const audioTensor = output["audio"];
-    if (!audioTensor) return null;
+    for (const clause of rawClauses) {
+      const endPunc: "." | "?" | "!" =
+        clause.punc === "?" ? "?" : clause.punc === "!" ? "!" : ".";
+      const seq = clauseToMeloSequence(clause.body, endPunc, runtime);
+      if (!seq) continue;
 
-    const samples = audioTensor.data as Float32Array;
-    if (!samples || samples.length === 0) return null;
+      const T = seq.phones.length;
+      const feeds: Record<string, ort.Tensor> = {
+        x: new ort.Tensor(
+          "int64",
+          BigInt64Array.from(seq.phones.map((n) => BigInt(n))),
+          [1, T],
+        ),
+        x_lengths: new ort.Tensor(
+          "int64",
+          BigInt64Array.from([BigInt(T)]),
+          [1],
+        ),
+        sid: new ort.Tensor("int64", BigInt64Array.from([0n]), [1]),
+        tone: new ort.Tensor(
+          "int64",
+          BigInt64Array.from(seq.tones.map((n) => BigInt(n))),
+          [1, T],
+        ),
+        language: new ort.Tensor(
+          "int64",
+          BigInt64Array.from(seq.langIds.map((n) => BigInt(n))),
+          [1, T],
+        ),
+        bert: new ort.Tensor("float32", new Float32Array(1024 * T), [
+          1,
+          1024,
+          T,
+        ]),
+        ja_bert: new ort.Tensor("float32", new Float32Array(768 * T), [
+          1,
+          768,
+          T,
+        ]),
+        noise_scale: new ort.Tensor(
+          "float32",
+          Float32Array.from([noiseScale]),
+          [1],
+        ),
+        length_scale: new ort.Tensor(
+          "float32",
+          Float32Array.from([lengthScale]),
+          [1],
+        ),
+        noise_scale_w: new ort.Tensor(
+          "float32",
+          Float32Array.from([noiseScaleW]),
+          [1],
+        ),
+        sdp_ratio: new ort.Tensor("float32", Float32Array.from([sdpRatio]), [
+          1,
+        ]),
+      };
 
-    return float32ToWavBuffer(samples, MELOTTS_SAMPLE_RATE);
+      const output = await runtime.session.run(feeds);
+      const audioTensor = output["audio"];
+      if (!audioTensor) continue;
+
+      const samples = audioTensor.data as Float32Array;
+      if (!samples || samples.length === 0) continue;
+
+      clauseWaveforms.push(trimClauseWaveform(samples, MELOTTS_SAMPLE_RATE));
+    }
+
+    if (clauseWaveforms.length === 0) return null;
+    return clauseWaveformsToWavBuffer(clauseWaveforms, MELOTTS_SAMPLE_RATE);
   };
 
   const nextTask = inferenceQueue.then(runTask, runTask);
@@ -968,9 +1033,13 @@ export const synthesizeMeloSentence = async (
   const wavBuffer = await nextTask;
   if (!wavBuffer) return null;
 
+  // Readable.from(Buffer)의 objectMode 이슈를 방지하기 위해 순수 바이너리 PassThrough 스트림 사용
+  const stream = new PassThrough();
+  stream.end(wavBuffer);
+
   return {
     wavBuffer,
-    stream: Readable.from(wavBuffer),
+    stream,
   };
 };
 
@@ -999,26 +1068,5 @@ export const splitTextIntoSentences = (cleanedText: string): string[] => {
     }
   }
 
-  const merged: string[] = [];
-  let buffer = "";
-
-  for (const seg of expandedSegments) {
-    if (!buffer) {
-      buffer = seg;
-    } else if (buffer.length <= 5) {
-      buffer = `${buffer} ${seg}`;
-    } else {
-      merged.push(buffer);
-      buffer = seg;
-    }
-  }
-  if (buffer) {
-    if (merged.length > 0 && buffer.length <= 3) {
-      merged[merged.length - 1] = `${merged[merged.length - 1]} ${buffer}`;
-    } else {
-      merged.push(buffer);
-    }
-  }
-
-  return merged;
+  return expandedSegments;
 };
