@@ -6,5 +6,7 @@ node_modules
 context_database/
 models/
 :memory:.ses
+*.pid
+.seola-bot.pid
 
 

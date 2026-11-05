@@ -314,11 +314,13 @@ const streamCompletionWithSentences = async (
   model: string,
   messages: ChatCompletionMessageParam[],
   onSentence: (sentence: string) => void,
+  options?: { maxTokens?: number },
 ): Promise<string> => {
   const stream = await openAiClient.chat.completions.create({
     model,
     messages,
     stream: true,
+    ...(options?.maxTokens ? { max_tokens: options.maxTokens } : {}),
   });
 
   let rawContent = "";
@@ -505,9 +507,11 @@ export const generateAIResponse = async (
     ? `\n- 현재 음성 채널에 총 ${options.humanMemberCount ?? 2}명의 사람이 함께 접속해 있다. 다른 사람들끼리 나누는 대화에 불필요하게 끼어들지 않도록, 방금 ${userName}님이 설아를 불러서 직접 물어보거나 요청한 내용에만 집중하여 간결하게 답한다.`
     : "";
   const voiceConstraint = options?.isVoiceMode
-    ? `\n\n# Voice Call Mode (실시간 음성 통화 모드)
+    ? `\n\n# Voice Call Mode (실시간 음성 통화 모드 - 최우선 절대 규칙)
 - 현재 텍스트 메신저가 아니라 디스코드 음성 채널에서 실시간 목소리로 통화 중이다.
-- TTS(음성 합성)로 바로 읽히므로 괄호 지문이나 부연 설명((웃음), (장난스럽게), [미소] 등 모든 괄호 표현), 'ㅋㅋ', 'ㅎㅎ', 'ㅠㅠ', 'ㅜㅜ', 이모티콘, 마크다운 기호를 절대 쓰지 말고, 실제로 소리 내어 말할 대사만 자연스러운 한글 구어체 문장으로 1~2문장 이내로 짧게 답한다.${multiPersonConstraint}`
+- [답변 길이 엄격 제한]: 답변은 반드시 1문장(최대 2문장), 공백 포함 40자 이내로 매우 짧고 간결하게 대답한다.
+- 긴 설명, 나열식 답변, 장황한 부연설명은 절대로 하지 않는다. 실제 전화 통화하듯 한마디로 짧고 확실하게 끝맺는다.
+- TTS(음성 합성)로 바로 읽히므로 괄호 지문이나 부연 설명((웃음), (장난스럽게), [미소] 등 모든 괄호 표현), 'ㅋㅋ', 'ㅎㅎ', 'ㅠㅠ', 'ㅜㅜ', 이모티콘, 마크다운 기호를 절대 쓰지 말고, 실제로 소리 내어 말할 대사만 자연스러운 한글 구어체로 짧게 답한다.${multiPersonConstraint}`
     : "";
 
   const systemPromptContent = personaDef.buildPrompt({
@@ -572,6 +576,7 @@ export const generateAIResponse = async (
         selectedModel,
         toolMessages,
         options.onSentence,
+        options?.isVoiceMode ? { maxTokens: 80 } : undefined,
       );
     } else {
       const completion = await openAiClient.chat.completions.create({
@@ -581,11 +586,12 @@ export const generateAIResponse = async (
       responseContent = completion.choices[0]?.message.content;
     }
   } else if (options?.onSentence) {
-    // 실시간 음성 통화 모드: 첫 문장이 생성되는 즉시 TTS 파이프라인으로 스트리밍 전달하여 응답 지연 최소화
+    // 실시간 음성 통화 모드: 첫 문장이 생성되는 즉시 TTS 파이프라인으로 스트리밍 전달하여 응답 지연 최소화 (짧은 대답 유지를 위해 80 토큰 제한)
     responseContent = await streamCompletionWithSentences(
       selectedModel,
       baseMessages,
       options.onSentence,
+      options?.isVoiceMode ? { maxTokens: 80 } : undefined,
     );
   } else {
     // 일반 대화 중 LLM이 자율적으로 도구(web_search 등) 호출 여부를 판단하도록 Function Calling 시도

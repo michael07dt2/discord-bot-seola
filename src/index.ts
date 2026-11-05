@@ -41,6 +41,7 @@ import {
 import {
   getActiveVoiceSessions,
   getCurrentVoicePreset,
+  leaveAllVoiceChannels,
   preloadWhisperModel,
   removeVoiceChatSession,
   setGuildPlaybackMode,
@@ -55,6 +56,16 @@ import {
   registerDashboardRoutes,
   type DashboardStatusSnapshot,
 } from "./util/dashboard.ts";
+import {
+  checkAndAcquireProcessLock,
+  releaseProcessLock,
+} from "./util/processLock.ts";
+
+// 0. 단일 인스턴스 락 확인 (이미 실행 중인 프로세스가 있는지 사전 검사)
+const lock = checkAndAcquireProcessLock();
+if (!lock.success) {
+  process.exit(1);
+}
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -681,9 +692,51 @@ discordClient.on("messageCreate", async (message) => {
 // 3. Express 서버 및 음성 대화록 대시보드 실행
 registerDashboardRoutes(app, getDashboardStatusSnapshot);
 
-app.listen(port, () => {
+const server = app.listen(port, () => {
   console.log(`Server & Voice Dashboard running on http://localhost:${port}/dashboard`);
 });
 
-// 4. 봇 로그인
+// 4. 프로세스 정상 종료 시그널 처리 (종료 시 반드시 모든 음성 채널 퇴장 및 락 해제)
+let isShuttingDown = false;
+const handleGracefulShutdown = async (signal: string) => {
+  if (isShuttingDown) return;
+  isShuttingDown = true;
+  console.log(
+    `\n[Process] ${signal} 시그널 수신. 모든 음성 채널 퇴장 및 안전한 종료 절차를 시작합니다...`,
+  );
+
+  try {
+    // 1) 모든 활성 음성 채널에서 퇴장
+    await leaveAllVoiceChannels();
+
+    // 2) 디스코드 게이트웨이 세션 정리
+    try {
+      await discordClient.destroy();
+      console.log("[Process] 디스코드 봇 클라이언트 연결을 정상 종료했습니다.");
+    } catch {
+      // 무시
+    }
+
+    // 3) Express 대시보드 서버 닫기
+    server.close(() => {
+      console.log("[Process] Express 대시보드 서버를 정상 종료했습니다.");
+    });
+
+    // 4) PID 락 파일 해제
+    releaseProcessLock();
+
+    console.log("[Process] ✅ 모든 리소스가 안전하게 정리되었습니다. 프로세스를 종료합니다.");
+    process.exit(0);
+  } catch (err) {
+    console.error("[Process] 종료 처리 중 예외 발생:", err);
+    releaseProcessLock();
+    process.exit(1);
+  }
+};
+
+process.on("SIGINT", () => handleGracefulShutdown("SIGINT"));
+process.on("SIGTERM", () => handleGracefulShutdown("SIGTERM"));
+process.on("SIGHUP", () => handleGracefulShutdown("SIGHUP"));
+
+// 5. 봇 로그인
 discordClient.login(process.env.DISCORD_TOKEN);

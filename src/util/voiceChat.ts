@@ -10,6 +10,7 @@ import {
   createAudioResource,
   EndBehaviorType,
   entersState,
+  getVoiceConnection,
   StreamType,
   type VoiceConnection,
 } from "@discordjs/voice";
@@ -368,14 +369,58 @@ export const getActiveVoiceSessions = (): ActiveVoiceSessionStatus[] => {
 };
 
 /**
+ * 특정 길드의 음성 채널 퇴장 및 세션 리소스 완전히 해제
+ */
+export const leaveVoiceChannel = (guildId: string): boolean => {
+  const session = guildSessions.get(guildId);
+  if (session) {
+    try {
+      session.cleanup();
+    } catch (err) {
+      console.warn(`[VoiceChat] 세션 cleanup 중 오류 (길드: ${guildId}):`, err);
+    }
+    guildSessions.delete(guildId);
+  }
+
+  const connection = getVoiceConnection(guildId);
+  if (connection) {
+    try {
+      connection.destroy();
+      console.log(`[VoiceChat] 길드(${guildId}) 음성 채널 연결을 성공적으로 해제(퇴장)했습니다.`);
+      return true;
+    } catch (err) {
+      console.error(`[VoiceChat] 길드(${guildId}) connection.destroy 실패:`, err);
+    }
+  }
+
+  return session !== undefined;
+};
+
+/**
+ * 프로세스 종료 또는 봇 재시작 시 활성화된 모든 음성 채널에서 완전히 퇴장 처리
+ */
+export const leaveAllVoiceChannels = async (): Promise<void> => {
+  const activeGuildIds = Array.from(guildSessions.keys());
+  if (activeGuildIds.length === 0) {
+    return;
+  }
+
+  console.log(
+    `[VoiceChat] 🚪 프로세스 종료/정리에 따라 ${activeGuildIds.length}개 음성 채널 퇴장을 진행합니다...`,
+  );
+
+  for (const guildId of activeGuildIds) {
+    leaveVoiceChannel(guildId);
+  }
+
+  guildSessions.clear();
+};
+
+/**
  * 길드 음성 대화 세션 해제
  */
 export const removeVoiceChatSession = (guildId: string): void => {
-  const session = guildSessions.get(guildId);
-  if (session) {
-    session.cleanup();
-    guildSessions.delete(guildId);
-  }
+  leaveVoiceChannel(guildId);
 };
 
 /**
@@ -758,8 +803,11 @@ export const createSentenceSpeechPipeline = (
   connection: VoiceConnection,
   player: AudioPlayer,
   guildId: string,
+  options?: { maxSentences?: number },
 ) => {
   const synthesisQueue: Promise<SynthesizedSpeechResource | null>[] = [];
+  const maxSentences = options?.maxSentences ?? 2;
+  let enqueuedSentenceCount = 0;
   let isFinished = false;
   let wakeConsumer: (() => void) | null = null;
   let hasStartedPlayback = false;
@@ -822,6 +870,11 @@ export const createSentenceSpeechPipeline = (
   })();
 
   const enqueueSentence = (rawSentence: string): void => {
+    // 음성 대화에서는 대답을 짧게 유지하기 위해 최대 문장 수 제한 초과분은 스킵
+    if (enqueuedSentenceCount >= maxSentences) {
+      return;
+    }
+
     const cleaned = cleanTextForTTS(rawSentence);
     if (!cleaned) return;
 
@@ -829,6 +882,11 @@ export const createSentenceSpeechPipeline = (
     const subSentences = splitTextIntoSentences(cleaned);
     for (const sentence of subSentences) {
       if (!sentence) continue;
+      if (enqueuedSentenceCount >= maxSentences) {
+        break;
+      }
+      enqueuedSentenceCount++;
+
       const synthPromise = synthesizeSpeechResource(sentence).catch((err) => {
         console.error("[VoiceChat] 문장 합성 오류:", err);
         return null;

@@ -4,7 +4,7 @@ import { spawn, execFile } from "child_process";
 import { promisify } from "util";
 import type { ChatCompletionTool } from "openai/resources/chat/completions/completions.js";
 import type { SendableChannels } from "discord.js";
-import { getCurrentVoicePreset } from "./voiceChat.ts";
+import { getCurrentVoicePreset, leaveAllVoiceChannels } from "./voiceChat.ts";
 
 const execFileAsync = promisify(execFile);
 
@@ -236,7 +236,14 @@ export const scheduleBotRestart = (reason = "사용자 요청"): string => {
   console.log(`[Tools:restart_bot] 프로세스 재시작 예약됨 (사유: ${reason})`);
 
   // 응답 메시지가 먼저 전송될 수 있도록 1.5초 후 재시작 트리거
-  setTimeout(() => {
+  setTimeout(async () => {
+    // 0) 재시작 전 모든 활성 음성 채널에서 안전하게 퇴장
+    try {
+      await leaveAllVoiceChannels();
+    } catch (voiceErr) {
+      console.warn("[Tools:restart_bot] 재시작 전 음성 퇴장 실패:", voiceErr);
+    }
+
     try {
       // 1) tsx watch 모드로 실행 중이면 src/index.ts의 타임스탬프를 갱신하여 깔끔하게 핫 리스타트 유도
       const indexPath = path.resolve(process.cwd(), "src", "index.ts");
