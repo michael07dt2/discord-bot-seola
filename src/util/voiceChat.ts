@@ -13,6 +13,7 @@ import {
   getVoiceConnection,
   StreamType,
   type VoiceConnection,
+  VoiceConnectionStatus,
 } from "@discordjs/voice";
 import {
   pipeline,
@@ -1108,11 +1109,22 @@ export const setupVoiceChatListener = (params: {
   const { client, connection, voiceChannel, textChannel, player } = params;
   const guildId = voiceChannel.guild.id;
 
-  // 기존 세션이 있으면 정리 후 재등록
-  removeVoiceChatSession(guildId);
+  // 기존 세션 리스너가 있다면 리스너 이벤트만 안전하게 정리 (음성 연결 connection은 파괴하지 않고 유지)
+  const existingSession = guildSessions.get(guildId);
+  if (existingSession) {
+    try {
+      existingSession.cleanup();
+    } catch (err) {
+      console.warn(`[VoiceChat] 기존 세션 cleanup 중 오류 (길드: ${guildId}):`, err);
+    }
+    guildSessions.delete(guildId);
+  }
 
   // 백그라운드에서 Whisper 모델 사전 로드 시작
   preloadWhisperModel().catch(() => {});
+
+  // 오디오 플레이어 음성 연결에 구독
+  connection.subscribe(player);
 
   const session: GuildVoiceSession = {
     guildId,
@@ -1383,9 +1395,21 @@ export const setupVoiceChatListener = (params: {
 
   connection.receiver.speaking.on("start", onSpeakingStart);
 
+  const onDestroyed = () => {
+    const s = guildSessions.get(guildId);
+    if (s) {
+      try {
+        s.cleanup();
+      } catch {}
+      guildSessions.delete(guildId);
+    }
+  };
+  connection.on(VoiceConnectionStatus.Destroyed, onDestroyed);
+
   session.cleanup = () => {
     connection.receiver.speaking.off("start", onSpeakingStart);
     player.off(AudioPlayerStatus.Idle, onPlayerIdle);
+    connection.off(VoiceConnectionStatus.Destroyed, onDestroyed);
     session.activeUsers.clear();
   };
 
