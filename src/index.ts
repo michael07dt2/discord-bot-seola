@@ -24,6 +24,7 @@ import {
 import { songMap } from "./util/songmap.ts";
 import {
   getBotStatusReport,
+  getSelfImproveStatusReport,
   performWebSearch,
   runSelfImprovement,
   scheduleBotRestart,
@@ -137,7 +138,7 @@ discordClient.on("messageCreate", async (message) => {
           name: "🎙️ 실시간 음성 대화 (음성 채널)",
           value: [
             "`설아야 이리온` / `설아야 들어와` / `설아야 통화하자` — 음성 채널 입장 및 실시간 대화 시작",
-            "*(입장 후에는 호출어 없이 마이크로 말하면 설아가 바로 대답하며, 음성 대화록은 채팅창 대신 대시보드에만 실시간 기록됩니다)*",
+            "*(1:1 통화 시에는 호출어 없이 바로 대답하며, 사람이 여러 명일 때는 `설아야`라고 부르며 질문한 경우에만 대답합니다. 음성 대화록은 대시보드에 실시간 기록됩니다)*",
             `\`!dashboard\` / \`!대시보드\` — 실시간 음성 대화록 웹 대시보드 주소 확인 (${dashboardUrl})`,
             "`설아야 조용히 해` / `설아야 음성대화 꺼줘` — 음성 듣기 일시 중지",
             "`설아야 다시 말해` / `설아야 음성대화 켜줘` — 음성 듣기 재개",
@@ -164,6 +165,7 @@ discordClient.on("messageCreate", async (message) => {
           value: [
             "`!search <검색어>` / `!검색 <검색어>` / `설아야 <내용> 검색해줘` — 실시간 웹·뉴스·위키 검색",
             "`!improve <요청>` / `!자기개선 <요청>` / `설아야 agy로 <요청> 개선해줘` — Antigravity CLI(`agy`) 또는 Hermes 호출 자기개선",
+            "`!작업상태` / `!agy-status` / `설아야 agy 지금 뭐해?` — 자기개선 에이전트(`agy`) 현재 작업 및 진행 상태 확인",
             "`!restart` / `!재시작` / `설아야 재시작해` — 설아 봇 프로세스 자체 재시작",
             "`!status` / `!상태` / `설아야 상태 확인` — 봇 프로세스·메모리·Git 상태 확인",
           ].join("\n"),
@@ -210,6 +212,17 @@ discordClient.on("messageCreate", async (message) => {
     return;
   }
 
+  // 자기개선(agy/hermes) 작업 진행 상태 조회 명령어 (!작업상태, !자기개선상태, !agy-status)
+  if (
+    message.content.startsWith("!작업상태") ||
+    message.content.startsWith("!자기개선상태") ||
+    message.content.startsWith("!agy-status")
+  ) {
+    const report = await getSelfImproveStatusReport();
+    await message.reply(`🛠️ **자기개선 에이전트(agy) 작업 상태**\n${report}`);
+    return;
+  }
+
   // 자기개선 명령어 (!improve, !자기개선, !agy, !hermes)
   if (
     message.content.startsWith("!improve") ||
@@ -223,8 +236,9 @@ discordClient.on("messageCreate", async (message) => {
       .trim();
 
     if (!instruction) {
+      const currentReport = await getSelfImproveStatusReport();
       await message.reply(
-        "자기개선 지시사항을 입력해주세요.\n예: `!자기개선 노래 목록에 새로운 키워드 별칭 추가해줘` 또는 `!agy 상태 메시지에 현재 시간도 표시해줘`",
+        `🛠️ **현재 자기개선 에이전트(agy) 상태**\n${currentReport}\n\n새로운 작업을 지시하려면 내용을 함께 입력해주세요.\n예: \`!자기개선 노래 목록에 새로운 키워드 별칭 추가해줘\` 또는 \`!agy 상태 메시지에 현재 시간도 표시해줘\``,
       );
       return;
     }

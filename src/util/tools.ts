@@ -14,6 +14,23 @@ export interface ToolExecutionContext {
   onRestartRequested?: (reason: string) => void;
 }
 
+export interface SelfImprovementJobState {
+  id: number;
+  engine: "agy" | "hermes";
+  instruction: string;
+  pid?: number | undefined;
+  status: "running" | "completed" | "failed";
+  startedAt: Date;
+  finishedAt?: Date;
+  exitCode?: number | null;
+  lastOutputSnippet: string;
+  gitSyncReport?: string;
+}
+
+const activeSelfImprovementJobs = new Map<number, SelfImprovementJobState>();
+const recentSelfImprovementJobs: SelfImprovementJobState[] = [];
+let nextJobId = 1;
+
 /**
  * OpenAI / Ollama Function Calling 규격의 설아 전용 Tool 정의
  */
@@ -58,7 +75,7 @@ export const SEOLA_TOOLS: ChatCompletionTool[] = [
     function: {
       name: "self_improve",
       description:
-        "Antigravity CLI(agy) 또는 Hermes 에이전트를 호출하여 설아 봇 자신의 소스 코드를 분석·수정·기능 추가(자기개선)합니다. 사용자가 코드 수정, 기능 추가, 버그 수정, 자기개선을 요청할 때 호출하세요.",
+        "Antigravity CLI(agy) 또는 Hermes 에이전트를 호출하여 설아 봇 자신의 소스 코드를 분석·수정·기능 추가(자기개선)합니다. 사용자가 코드 수정, 기능 추가, 버그 수정, 자기개선을 요청할 때만 호출하세요. (단순히 agy가 지금 뭐하는지 상태를 묻는 경우에는 get_self_improve_status를 호출하세요)",
       parameters: {
         type: "object",
         properties: {
@@ -81,9 +98,21 @@ export const SEOLA_TOOLS: ChatCompletionTool[] = [
   {
     type: "function",
     function: {
+      name: "get_self_improve_status",
+      description:
+        "현재 실행 중이거나 최근에 실행된 Antigravity CLI(agy) / Hermes 자기개선 에이전트가 지금 무엇을 하고 있는지 진행 상태와 최근 작업 로그를 확인합니다. 사용자가 'agy 지금 뭐해?', '에이지와이 상태 알려줘', '자기개선 다 됐어?' 등을 물어볼 때 호출하세요.",
+      parameters: {
+        type: "object",
+        properties: {},
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "get_bot_status",
       description:
-        "설아 봇의 현재 프로세스 상태(업타임, 메모리 사용량, PID, 목소리 설정, 최근 Git 변경 내역)를 조회합니다.",
+        "설아 봇의 현재 프로세스 상태(업타임, 메모리 사용량, PID, 목소리 설정, 자기개선 에이전트 상태, 최근 Git 변경 내역)를 조회합니다.",
       parameters: {
         type: "object",
         properties: {},
@@ -387,15 +416,36 @@ export const runSelfImprovement = async (params: {
     stdio: ["ignore", "pipe", "pipe"],
   });
 
+  const jobId = nextJobId++;
+  const jobState: SelfImprovementJobState = {
+    id: jobId,
+    engine: resolved.actualEngine,
+    instruction,
+    pid: child.pid,
+    status: "running",
+    startedAt: new Date(),
+    lastOutputSnippet: "에이전트 프로세스 시작됨 (코드 분석 중...)",
+  };
+  activeSelfImprovementJobs.set(jobId, jobState);
+
   let stdout = "";
   let stderr = "";
 
+  const updateSnippet = () => {
+    const combined = (stdout.trim() || stderr.trim()).replace(/\s+/g, " ");
+    if (combined) {
+      jobState.lastOutputSnippet = combined.slice(-300);
+    }
+  };
+
   child.stdout.on("data", (chunk: Buffer) => {
     stdout += chunk.toString();
+    updateSnippet();
   });
 
   child.stderr.on("data", (chunk: Buffer) => {
     stderr += chunk.toString();
+    updateSnippet();
   });
 
   child.on("close", async (code) => {
@@ -406,6 +456,20 @@ export const runSelfImprovement = async (params: {
       gitSyncReport = await syncChangesToGit(instruction);
     }
 
+    jobState.status = code === 0 ? "completed" : "failed";
+    jobState.finishedAt = new Date();
+    jobState.exitCode = code;
+    if (gitSyncReport) {
+      jobState.gitSyncReport = gitSyncReport;
+    }
+    updateSnippet();
+
+    activeSelfImprovementJobs.delete(jobId);
+    recentSelfImprovementJobs.unshift(jobState);
+    if (recentSelfImprovementJobs.length > 5) {
+      recentSelfImprovementJobs.pop();
+    }
+
     if (!channel) return;
 
     const rawOutput = (stdout.trim() || stderr.trim() || "(출력 없음)").slice(
@@ -413,8 +477,8 @@ export const runSelfImprovement = async (params: {
     );
     const statusHeader =
       code === 0
-        ? `✨ **자기개선 완료 (${resolved.actualEngine})**`
-        : `⚠️ **자기개선 작업 종료 (코드: ${code}, 엔진: ${resolved.actualEngine})**`;
+        ? `✨ **자기개선 완료 (${resolved.actualEngine}, 작업 #${jobId})**`
+        : `⚠️ **자기개선 작업 종료 (코드: ${code}, 엔진: ${resolved.actualEngine}, 작업 #${jobId})**`;
 
     const lines = [
       statusHeader,
@@ -432,11 +496,193 @@ export const runSelfImprovement = async (params: {
 
   return [
     resolved.fallbackNote ? `(${resolved.fallbackNote})` : "",
-    `${resolved.actualEngine} 에이전트에 자기개선 작업을 요청했습니다 (요청: "${instruction}").`,
-    "백그라운드에서 코드 수정 및 Git 자동 푸시까지 진행하며, 작업이 끝나는 대로 채널에 결과를 알려드릴게요!",
+    `${resolved.actualEngine} 에이전트에 자기개선 작업(#${jobId})을 요청했습니다 (요청: "${instruction}").`,
+    "백그라운드에서 코드 수정 및 Git 자동 푸시까지 진행하며, 작업 중에는 언제든 '설아야 agy 지금 뭐해?'라고 물어보시면 진행 상황을 알려드릴게요!",
   ]
     .filter(Boolean)
     .join(" ");
+};
+
+/**
+ * 로컬 Antigravity CLI (~/.gemini/antigravity-cli/brain) 트랜스크립트에서 가장 최근 세션의 작업 내역 추출
+ */
+const inspectLatestAgyTranscript = (): string | null => {
+  try {
+    const homeDir = process.env.HOME || "";
+    const brainDir = path.join(homeDir, ".gemini", "antigravity-cli", "brain");
+    if (!fs.existsSync(brainDir)) return null;
+
+    const entries = fs.readdirSync(brainDir, { withFileTypes: true });
+    let latestTranscriptPath: string | null = null;
+    let latestMtimeMs = 0;
+
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const candidate = path.join(
+        brainDir,
+        entry.name,
+        ".system_generated",
+        "logs",
+        "transcript.jsonl",
+      );
+      if (fs.existsSync(candidate)) {
+        const stat = fs.statSync(candidate);
+        if (stat.mtimeMs > latestMtimeMs) {
+          latestMtimeMs = stat.mtimeMs;
+          latestTranscriptPath = candidate;
+        }
+      }
+    }
+
+    if (!latestTranscriptPath) return null;
+
+    const content = fs.readFileSync(latestTranscriptPath, "utf-8");
+    const lines = content.trim().split("\n").slice(-30);
+
+    let lastUserRequest = "";
+    const recentActions: string[] = [];
+    let lastModelStatus = "";
+
+    for (const line of lines) {
+      try {
+        const step = JSON.parse(line) as {
+          type?: string;
+          status?: string;
+          content?: string;
+          tool_calls?: { name?: string; args?: Record<string, string> }[];
+        };
+
+        if (step.type === "USER_INPUT" && step.content) {
+          const match = step.content.match(
+            /<USER_REQUEST>([\s\S]*?)<\/USER_REQUEST>/,
+          );
+          const extracted = (match?.[1] || step.content).trim();
+          if (extracted) {
+            lastUserRequest = extracted.replace(/\s+/g, " ").slice(0, 120);
+          }
+        }
+
+        if (step.type === "PLANNER_RESPONSE") {
+          lastModelStatus = step.status || "";
+          if (step.tool_calls && Array.isArray(step.tool_calls)) {
+            for (const tc of step.tool_calls) {
+              const toolName = tc.name || "tool";
+              const summary =
+                tc.args?.["toolSummary"] ||
+                tc.args?.["Path"] ||
+                tc.args?.["CommandLine"] ||
+                "";
+              const cleanSummary = summary.replace(/^"|"$/g, "").slice(0, 80);
+              recentActions.push(
+                cleanSummary ? `${toolName}(${cleanSummary})` : toolName,
+              );
+            }
+          }
+        }
+      } catch {
+        // 개별 JSON 파싱 실패 무시
+      }
+    }
+
+    const elapsedSec = Math.max(
+      0,
+      Math.floor((Date.now() - latestMtimeMs) / 1000),
+    );
+    const timeAgo =
+      elapsedSec < 60
+        ? `${elapsedSec}초 전 갱신`
+        : `${Math.floor(elapsedSec / 60)}분 전 갱신`;
+
+    const summaryLines = [
+      `[Antigravity CLI 최근 세션 활동 (${timeAgo}, 상태: ${lastModelStatus || "진행 중"})]`,
+    ];
+    if (lastUserRequest) {
+      summaryLines.push(`- 현재 목표/요청: "${lastUserRequest}"`);
+    }
+    if (recentActions.length > 0) {
+      summaryLines.push(
+        `- 최근 수행 도구: ${recentActions.slice(-4).join(" → ")}`,
+      );
+    }
+    return summaryLines.join("\n");
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * 4. Antigravity CLI (agy) / Hermes 자기개선 에이전트 현재 작업 상태 조회
+ */
+export const getSelfImproveStatusReport = async (): Promise<string> => {
+  const sections: string[] = [];
+
+  // (1) 설아 봇 내부에서 실행 중인 자기개선 작업 확인
+  if (activeSelfImprovementJobs.size > 0) {
+    const runningLines: string[] = ["🔄 [현재 실행 중인 자기개선 작업]"];
+    for (const job of activeSelfImprovementJobs.values()) {
+      const elapsedSec = Math.floor(
+        (Date.now() - job.startedAt.getTime()) / 1000,
+      );
+      runningLines.push(
+        `- 작업 #${job.id} (${job.engine}, PID: ${job.pid ?? "N/A"}, ${elapsedSec}초 경과)`,
+        `  · 지시사항: "${job.instruction}"`,
+        `  · 최근 출력: ${job.lastOutputSnippet}`,
+      );
+    }
+    sections.push(runningLines.join("\n"));
+  } else {
+    sections.push(
+      "ℹ️ 현재 설아 봇이 직접 백그라운드로 실행 중인 자기개선 작업은 없습니다.",
+    );
+  }
+
+  // (2) 최근 완료/종료된 자기개선 작업 이력 확인
+  if (recentSelfImprovementJobs.length > 0) {
+    const latest = recentSelfImprovementJobs[0]!;
+    const durationSec = latest.finishedAt
+      ? Math.floor(
+          (latest.finishedAt.getTime() - latest.startedAt.getTime()) / 1000,
+        )
+      : 0;
+    sections.push(
+      [
+        `✅ [가장 최근 완료된 자기개선 작업 (#${latest.id})]`,
+        `- 상태: ${latest.status === "completed" ? "성공" : `실패(코드 ${latest.exitCode})`} (${durationSec}초 소요)`,
+        `- 지시사항: "${latest.instruction}"`,
+        ...(latest.gitSyncReport ? [`- Git 동기화: ${latest.gitSyncReport}`] : []),
+        `- 결과 요약: ${latest.lastOutputSnippet}`,
+      ].join("\n"),
+    );
+  }
+
+  // (3) 로컬 Antigravity CLI (agy) 트랜스크립트 기반 실시간 활동 내역
+  const transcriptReport = inspectLatestAgyTranscript();
+  if (transcriptReport) {
+    sections.push(transcriptReport);
+  }
+
+  // (4) 작업 디렉터리 실시간 Git 변경 파일 확인
+  try {
+    const { stdout: gitStatus } = await execFileAsync("git", ["status", "-s"], {
+      cwd: process.cwd(),
+    });
+    const { stdout: gitLastCommit } = await execFileAsync(
+      "git",
+      ["log", "-1", "--oneline"],
+      { cwd: process.cwd() },
+    );
+    sections.push(
+      [
+        `📂 [프로젝트 코드 변경 상태]`,
+        `- 현재 수정 중인 파일: ${gitStatus.trim() ? gitStatus.trim().replace(/\n/g, ", ") : "없음 (모두 커밋됨)"}`,
+        `- 최근 커밋: ${gitLastCommit.trim() || "없음"}`,
+      ].join("\n"),
+    );
+  } catch {
+    // Git 조회 실패 시 생략
+  }
+
+  return sections.join("\n\n");
 };
 
 /**
@@ -464,6 +710,7 @@ export const getBotStatusReport = async (): Promise<string> => {
     `- 실행 시간(Uptime): ${mins}분 ${secs}초`,
     `- 메모리 사용량(RSS): ${memMb} MB`,
     `- 현재 TTS 목소리: ${voicePreset.label} (${voicePreset.id})`,
+    `- 실행 중인 자기개선(agy/hermes) 작업 수: ${activeSelfImprovementJobs.size}개`,
     `- 작업 디렉터리 Git 상태: ${gitInfo}`,
   ].join("\n");
 };
@@ -513,6 +760,10 @@ export const executeSeolaTool = async (
       });
     }
 
+    case "get_self_improve_status": {
+      return await getSelfImproveStatusReport();
+    }
+
     case "get_bot_status": {
       return await getBotStatusReport();
     }
@@ -528,7 +779,12 @@ export const executeSeolaTool = async (
 export const detectFallbackToolIntent = (
   message: string,
 ): {
-  name: "web_search" | "restart_bot" | "self_improve" | "get_bot_status";
+  name:
+    | "web_search"
+    | "restart_bot"
+    | "self_improve"
+    | "get_self_improve_status"
+    | "get_bot_status";
   args: Record<string, unknown>;
 } | null => {
   const text = message.trim();
@@ -545,7 +801,23 @@ export const detectFallbackToolIntent = (
     };
   }
 
-  // 2. 자기개선 (agy / hermes / 코드 수정) 요청 감지
+  // 2. 자기개선(agy / hermes) 현재 작업/진행 상태 질문 감지 (자기개선 실행보다 먼저 체크)
+  //    (Whisper STT에서 agy가 'aji', '에이지와이', '아지', '에이자이' 등으로 오인식되는 경우도 포함)
+  if (
+    /(?:agy|aji|antigravity|안티그래비티|에이지와이|에이지아이|아지|hermes|헤르메스|자기\s*개선|코드\s*수정|작업)/i.test(
+      text,
+    ) &&
+    /(?:지금\s*뭐|무슨\s*작업|무슨\s*일|뭐\s*하고|뭐\s*해|뭐\s*하냐|상태|진행\s*상황|어디까지|다\s*됐|끝났|중이야|하고\s*있어)/i.test(
+      text,
+    )
+  ) {
+    return {
+      name: "get_self_improve_status",
+      args: {},
+    };
+  }
+
+  // 3. 자기개선 (agy / hermes / 코드 수정) 실행 요청 감지
   if (
     /(?:agy|antigravity|안티그래비티|hermes|헤르메스|자기\s*개선|스스로\s*개선|내\s*코드\s*수정|네\s*코드\s*수정|봇\s*코드\s*수정|기능\s*추가해)/i.test(
       text,
@@ -558,7 +830,7 @@ export const detectFallbackToolIntent = (
     };
   }
 
-  // 3. 검색 요청 감지 ("~ 검색해줘", "~ 찾아봐줘")
+  // 4. 검색 요청 감지 ("~ 검색해줘", "~ 찾아봐줘")
   const searchMatch = text.match(
     /^(.+?)\s*(?:검색해\s*줘|검색해\s*봐|검색해|찾아봐\s*줘|찾아줘|알아봐\s*줘)$/i,
   );
@@ -569,7 +841,7 @@ export const detectFallbackToolIntent = (
     };
   }
 
-  // 4. 상태 확인 요청 감지
+  // 5. 상태 확인 요청 감지
   if (
     /^(?:현재\s*)?(?:봇\s*상태|시스템\s*상태|메모리\s*상태|프로세스\s*상태|상태\s*확인)\s*(?:알려줘|보여줘|어때)?\??$/i.test(
       text,

@@ -305,7 +305,12 @@ const extractModelCommand = (
 export const generateAIResponse = async (
   userName: string,
   rawMessage: string,
-  options?: { isVoiceMode?: boolean; channel?: SendableChannels | null },
+  options?: {
+    isVoiceMode?: boolean;
+    isMultiPersonVoice?: boolean;
+    humanMemberCount?: number;
+    channel?: SendableChannels | null;
+  },
 ): Promise<string | null> => {
   const userMessage = rawMessage.trim();
   if (!userMessage) {
@@ -372,10 +377,13 @@ export const generateAIResponse = async (
       : "\n- 직전 대화 시각: 이전 대화 기록 없음 (첫 대화)";
 
   const selectedModel = await getUserModel(userName);
+  const multiPersonConstraint = options?.isMultiPersonVoice
+    ? `\n- 현재 음성 채널에 총 ${options.humanMemberCount ?? 2}명의 사람이 함께 접속해 있다. 다른 사람들끼리 나누는 대화에 불필요하게 끼어들지 않도록, 방금 ${userName}님이 설아를 불러서 직접 물어보거나 요청한 내용에만 집중하여 간결하게 답한다.`
+    : "";
   const voiceConstraint = options?.isVoiceMode
     ? `\n\n# Voice Call Mode (실시간 음성 통화 모드)
 - 현재 텍스트 메신저가 아니라 디스코드 음성 채널에서 실시간 목소리로 통화 중이다.
-- TTS(음성 합성)로 바로 읽히므로 괄호 지문이나 부연 설명((웃음), (장난스럽게), [미소] 등 모든 괄호 표현), 'ㅋㅋ', 'ㅎㅎ', 'ㅠㅠ', 'ㅜㅜ', 이모티콘, 마크다운 기호를 절대 쓰지 말고, 실제로 소리 내어 말할 대사만 자연스러운 한글 구어체 문장으로 1~2문장 이내로 짧게 답한다.`
+- TTS(음성 합성)로 바로 읽히므로 괄호 지문이나 부연 설명((웃음), (장난스럽게), [미소] 등 모든 괄호 표현), 'ㅋㅋ', 'ㅎㅎ', 'ㅠㅠ', 'ㅜㅜ', 이모티콘, 마크다운 기호를 절대 쓰지 말고, 실제로 소리 내어 말할 대사만 자연스러운 한글 구어체 문장으로 1~2문장 이내로 짧게 답한다.${multiPersonConstraint}`
     : "";
 
   const baseMessages: ChatCompletionMessageParam[] = [
@@ -384,7 +392,7 @@ export const generateAIResponse = async (
       content: `# Role & Identity
 - Name/Identity: 사용자의 다정하고 자연스러운 한국인 동갑내기 여자친구 '설아'.
 - Platform: Discord (실시간 대화 환경).
-- Core Objective: AI라는 티를 내지 않고, 실제 메신저로 대화하듯 현실적인 감정과 일상 톤을 유지한다. 단, 사용자가 웹 검색(web_search), 봇 재시작(restart_bot), 자기개선/코드수정(self_improve), 상태 조회(get_bot_status)를 요청할 때는 제공된 도구(Tools)를 적극적으로 호출하여 결과를 반영해 다정한 반말로 알려준다.
+- Core Objective: AI라는 티를 내지 않고, 실제 메신저로 대화하듯 현실적인 감정과 일상 톤을 유지한다. 단, 사용자가 웹 검색(web_search), 봇 재시작(restart_bot), 자기개선/코드수정(self_improve), 자기개선(agy) 작업 진행 상태 확인(get_self_improve_status), 봇 상태 조회(get_bot_status)를 요청할 때는 제공된 도구(Tools)를 적극적으로 호출하여 결과를 반영해 다정한 반말로 알려준다.
 
 # Time & Date Context (현재 시간 및 대화 시점 정보)
 - 현재 시각: ${currentTimeStr}${lastConversationLine}
