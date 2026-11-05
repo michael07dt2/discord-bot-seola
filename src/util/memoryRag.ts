@@ -288,6 +288,11 @@ export const extractAndStoreImplicitMemories = async (
   // 개인 선호 및 신상 정보 패턴
   const patterns: { regex: RegExp; category: string; importance: number }[] = [
     {
+      regex: /(?:내|제|나|저)\s*(?:의)?\s*(?:생년월일|생일|생신|출생일|태어난\s*(?:날|해)?)(?:은|이|이야|야)?\s*([^\n,.!?~]+)/i,
+      category: "birthday",
+      importance: 5,
+    },
+    {
       regex: /(?:나|내|저|제)\s*(?:는|가|의)?\s*(?:취미|특기)(?:는|가)?\s*([^\n,.!?~]+)/i,
       category: "hobby",
       importance: 4,
@@ -303,12 +308,17 @@ export const extractAndStoreImplicitMemories = async (
       importance: 4,
     },
     {
-      regex: /(?:내|제)\s*(?:생일|생신)(?:은|이)?\s*([^\n,.!?~]+)/i,
-      category: "birthday",
-      importance: 5,
+      regex: /(?:내|제|나)\s*(?:MBTI|엠비티아이)(?:는|이)?\s*([A-Za-z]{4})/i,
+      category: "mbti",
+      importance: 4,
     },
     {
-      regex: /(?:나|저)\s*(?:직업|일|직장|하는\s*일)(?:은|이)?\s*([^\n,.!?~]+)/i,
+      regex: /(?:나|저)\s*(?:는|가)?\s*([^\n,.!?~]+?)(?:에|에서)?\s*(?:살아|살고\s*있어|거주해)/i,
+      category: "location",
+      importance: 3,
+    },
+    {
+      regex: /(?:나|저|내|제)\s*(?:직업|일|직장|하는\s*일)(?:은|이)?\s*([^\n,.!?~]+)/i,
       category: "job",
       importance: 4,
     },
@@ -316,6 +326,11 @@ export const extractAndStoreImplicitMemories = async (
       regex: /(?:나|저)\s*(?:요즘|최근에)?\s*([^\n,.!?~]+?)(?:공부|준비|배우고|시작했어)/i,
       category: "study",
       importance: 3,
+    },
+    {
+      regex: /(?:내|나|저|제)\s*(.+?)(?:기억해\s*줘|기억해|저장해\s*줘|외워\s*둬|잊지\s*마)/i,
+      category: "custom",
+      importance: 5,
     },
   ];
 

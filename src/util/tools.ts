@@ -5,6 +5,7 @@ import { promisify } from "util";
 import type { ChatCompletionTool } from "openai/resources/chat/completions/completions.js";
 import type { SendableChannels } from "discord.js";
 import { getCurrentVoicePreset, leaveAllVoiceChannels } from "./voiceChat.ts";
+import { listUserMemories, saveUserMemory } from "./memoryRag.ts";
 import CONFIG from "../config/index.ts";
 
 const execFileAsync = promisify(execFile);
@@ -117,6 +118,40 @@ export const SEOLA_TOOLS: ChatCompletionTool[] = [
       parameters: {
         type: "object",
         properties: {},
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_user_memories",
+      description:
+        "현재 사용자에 대해 저장된 개인화 장기 기억(선호, 취미, 생일/생년월일, 성향, 직업 등) 목록을 조회합니다. 사용자가 '나에 대해 뭐 기억하고 있어?', '기억 목록 보여줘', '내가 알려준 거 왜 추가 안 해?' 등을 물어볼 때 반드시 호출하세요.",
+      parameters: {
+        type: "object",
+        properties: {},
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "save_user_memory",
+      description:
+        "사용자에 대한 새로운 개인화 장기 기억(취향, 선호, 취미, 생일/생년월일, 중요 정보)을 데이터베이스에 영구 저장합니다. 사용자가 '나 ... 기억해줘', '내 생년월일은 ~야' 등 기억 저장을 원할 때 호출하세요.",
+      parameters: {
+        type: "object",
+        properties: {
+          memory: {
+            type: "string",
+            description: "기억할 핵심 내용 (예: '생년월일은 2007.07.15', '취미는 피아노 연주')",
+          },
+          category: {
+            type: "string",
+            description: "기억 카테고리 (예: 'birthday', 'hobby', 'preference', 'dislike', 'job', 'mbti', 'custom')",
+          },
+        },
+        required: ["memory"],
       },
     },
   },
@@ -785,6 +820,34 @@ export const executeSeolaTool = async (
       return await getBotStatusReport();
     }
 
+    case "get_user_memories": {
+      const userName = context.userName || "사용자";
+      const memories = await listUserMemories(userName);
+      if (memories.length === 0) {
+        return `${userName}님에 대해 저장된 개인화 장기 기억이 아직 없습니다. '내 생일은 ~야' 또는 '이거 기억해줘'라고 말씀하시면 데이터베이스에 즉시 저장됩니다.`;
+      }
+      const listStr = memories
+        .map((m) => `• [${m.category}] ${m.memory}`)
+        .join("\n");
+      return `${userName}님에 대해 총 ${memories.length}건의 개인화 장기 기억이 데이터베이스에 안전하게 보관되어 있습니다:\n${listStr}\n\n위 기억들은 대화 시 자동으로 문맥에 반영되어 활용되고 있습니다.`;
+    }
+
+    case "save_user_memory": {
+      const userName = context.userName || "사용자";
+      const memory = String(parsedArgs["memory"] || "").trim();
+      const category = String(parsedArgs["category"] || "custom").trim();
+      if (!memory) {
+        return "기억할 내용을 전달받지 못했습니다.";
+      }
+      await saveUserMemory({
+        userName,
+        memory,
+        category,
+        importance: category === "birthday" ? 5 : 4,
+      });
+      return `${userName}님의 정보("${memory}")가 개인화 장기 기억으로 데이터베이스에 성공적으로 저장되었습니다.`;
+    }
+
     default:
       return `알 수 없는 도구입니다: ${toolName}`;
   }
@@ -801,7 +864,9 @@ export const detectFallbackToolIntent = (
     | "restart_bot"
     | "self_improve"
     | "get_self_improve_status"
-    | "get_bot_status";
+    | "get_bot_status"
+    | "get_user_memories"
+    | "save_user_memory";
   args: Record<string, unknown>;
 } | null => {
   const text = message.trim();
@@ -858,7 +923,36 @@ export const detectFallbackToolIntent = (
     };
   }
 
-  // 5. 상태 확인 요청 감지
+  // 5. 개인화 장기 기억 질문 및 확인 의도 감지
+  if (
+    /(?:개인화\s*)?(?:장기\s*)?기억/i.test(text) &&
+    /(?:왜\s*(?:추가|저장)?\s*(?:안|않)|확인|조회|목록|보여|알려|뭐\s*기억|알고\s*있어)/i.test(text)
+  ) {
+    return {
+      name: "get_user_memories",
+      args: {},
+    };
+  }
+
+  // 6. 명시적 기억 저장 요청 감지 ("~ 기억해줘", "~ 저장해줘", "내 생년월일은 ~야 기억해")
+  const explicitSaveMatch = text.match(
+    /^(.+?)\s*(?:기억해\s*줘|기억해|저장해\s*줘|외워\s*둬|잊지\s*마)$/i,
+  );
+  if (explicitSaveMatch?.[1]) {
+    return {
+      name: "save_user_memory",
+      args: {
+        memory: text,
+        category: /생일|생년월일/i.test(text)
+          ? "birthday"
+          : /취미|특기/i.test(text)
+          ? "hobby"
+          : "custom",
+      },
+    };
+  }
+
+  // 7. 상태 확인 요청 감지
   if (
     /^(?:현재\s*)?(?:봇\s*상태|시스템\s*상태|메모리\s*상태|프로세스\s*상태|상태\s*확인)\s*(?:알려줘|보여줘|어때)?\??$/i.test(
       text,
