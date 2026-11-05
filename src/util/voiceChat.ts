@@ -37,16 +37,18 @@ import {
 
 const { OpusEncoder } = opus;
 
-// Whisper 로컬 STT 모델 (기본값: 한국어 인식 및 실시간 응답 속도의 균형이 좋은 whisper-base)
+// Whisper 로컬 STT 모델 (기본값: 한국어 음성 인식률이 대폭 향상된 whisper-small)
 const WHISPER_MODEL =
-  process.env.WHISPER_MODEL || "onnx-community/whisper-base";
+  process.env.WHISPER_MODEL || "onnx-community/whisper-small";
+const FALLBACK_WHISPER_MODEL = "onnx-community/whisper-base";
 
 // Whisper 입력 샘플링 레이트 (16kHz Mono)
 const SAMPLE_RATE = 16000;
-// 최소/최대 발화 길이 (초) 및 최소 음량(RMS) 임계치
-const MIN_SPEECH_SECONDS = 0.45;
+// 최소/최대 발화 길이 (초) 및 최소 음량(RMS)/피크 임계치
+const MIN_SPEECH_SECONDS = 0.35;
 const MAX_SPEECH_SECONDS = 30.0;
-const MIN_RMS_THRESHOLD = 0.008;
+const MIN_RMS_THRESHOLD = 0.005;
+const MIN_PEAK_THRESHOLD = 0.02;
 
 // TTS 목소리 프리셋 정의 (기본 엔진: 로컬 한국어 전용 신경망 모델 MeloTTS-Korean)
 export interface VoicePreset {
@@ -192,20 +194,31 @@ const WHISPER_HALLUCINATIONS = new Set([
   "자막 제공",
   "자막제공",
   "한글자막",
+  "한국어자막",
+  "자막",
   "시청해주셔서 감사합니다",
   "시청해 주셔서 감사합니다",
   "구독과 좋아요",
+  "좋아요와 구독",
   "감사합니다",
   "고맙습니다",
   "mbc뉴스",
   "kbs뉴스",
   "sbs뉴스",
+  "ytn뉴스",
+  "jtbc뉴스",
   "뉴스",
   "딩동댕",
+  "다음영상에서만나요",
+  "다음시간에만나요",
+  "이영상은",
   "음",
   "아",
   "어",
   "으",
+  "네",
+  "예",
+  "응",
 ]);
 
 let transcriberPromise: Promise<AutomaticSpeechRecognitionPipeline> | null =
@@ -227,6 +240,7 @@ const guildSessions = new Map<string, GuildVoiceSession>();
 
 /**
  * 로컬 Whisper STT 및 MeloTTS-Korean 파이프라인 싱글톤 사전 로드
+ * - 기본 모델(`onnx-community/whisper-small`) 로드 실패 시 `whisper-base`로 자동 폴백
  */
 export const preloadWhisperModel =
   async (): Promise<AutomaticSpeechRecognitionPipeline> => {
@@ -234,23 +248,51 @@ export const preloadWhisperModel =
     preloadMeloTTSModel().catch(() => {});
 
     if (!transcriberPromise) {
-      console.log(
-        `[VoiceChat] 로컬 Whisper STT 모델 로드 중... (${WHISPER_MODEL})`,
-      );
-      transcriberPromise = (
+      const loadAsr = (
         pipeline as unknown as (
           task: "automatic-speech-recognition",
           model: string,
           options: { dtype: "q8" | "fp32" },
         ) => Promise<AutomaticSpeechRecognitionPipeline>
-      )("automatic-speech-recognition", WHISPER_MODEL, {
-        dtype: "q8",
-      })
+      );
+
+      console.log(
+        `[VoiceChat] 로컬 Whisper STT 모델 로드 중... (${WHISPER_MODEL})`,
+      );
+      transcriberPromise = loadAsr(
+        "automatic-speech-recognition",
+        WHISPER_MODEL,
+        { dtype: "q8" },
+      )
         .then((instance) => {
           console.log(`[VoiceChat] Whisper STT 모델 준비 완료 (${WHISPER_MODEL})`);
           return instance;
         })
-        .catch((err) => {
+        .catch(async (err) => {
+          if (WHISPER_MODEL !== FALLBACK_WHISPER_MODEL) {
+            console.warn(
+              `[VoiceChat] ${WHISPER_MODEL} 로드 실패, 폴백 모델(${FALLBACK_WHISPER_MODEL})로 재시도합니다:`,
+              err,
+            );
+            try {
+              const fallbackInstance = await loadAsr(
+                "automatic-speech-recognition",
+                FALLBACK_WHISPER_MODEL,
+                { dtype: "q8" },
+              );
+              console.log(
+                `[VoiceChat] Whisper STT 폴백 모델 준비 완료 (${FALLBACK_WHISPER_MODEL})`,
+              );
+              return fallbackInstance;
+            } catch (fallbackErr) {
+              transcriberPromise = null;
+              console.error(
+                "[VoiceChat] Whisper STT 폴백 모델 로드 실패:",
+                fallbackErr,
+              );
+              throw fallbackErr;
+            }
+          }
           transcriberPromise = null;
           console.error("[VoiceChat] Whisper STT 모델 로드 실패:", err);
           throw err;
@@ -316,30 +358,181 @@ export const removeVoiceChatSession = (guildId: string): void => {
 };
 
 /**
- * 16-bit Signed Little-Endian PCM 버퍼를 정규화된 Float32Array(-1.0 ~ 1.0)로 변환하고 RMS 에너지를 계산
+ * 16-bit Signed Little-Endian PCM 버퍼를 Whisper 입력에 최적화된 Float32Array(-1.0 ~ 1.0)로 전처리
+ * - 1) DC 오프셋 제거 및 1차 하이패스 필터(HPF ~80Hz)로 마이크 험/저주파 진동 노이즈 제거
+ * - 2) 프레임(20ms) 에너지 기반 앞뒤 무음 트리밍(Silence Trimming) 후 Whisper 인식 최적 여백(전면 80ms, 후면 240ms) 패딩
+ * - 3) 자동 이득 제어(AGC / Peak Normalization)로 작은 목소리도 목표 피크(0.85, 최대 증폭 5.0x)까지 선명하게 보정
  */
 const pcm16ToFloat32 = (
   pcmBuffer: Buffer,
-): { samples: Float32Array; rms: number; durationSec: number } => {
+): {
+  samples: Float32Array;
+  rms: number;
+  peak: number;
+  durationSec: number;
+} => {
   const sampleCount = Math.floor(pcmBuffer.length / 2);
-  const samples = new Float32Array(sampleCount);
-  let sumSquares = 0;
-
-  for (let i = 0; i < sampleCount; i++) {
-    const int16 = pcmBuffer.readInt16LE(i * 2);
-    const normalized = int16 / 32768.0;
-    samples[i] = normalized;
-    sumSquares += normalized * normalized;
+  if (sampleCount === 0) {
+    return {
+      samples: new Float32Array(0),
+      rms: 0,
+      peak: 0,
+      durationSec: 0,
+    };
   }
 
-  const rms = sampleCount > 0 ? Math.sqrt(sumSquares / sampleCount) : 0;
-  const durationSec = sampleCount / SAMPLE_RATE;
+  const rawSamples = new Float32Array(sampleCount);
 
-  return { samples, rms, durationSec };
+  // 1. Int16 -> Float32 변환 및 1차 하이패스 필터 (y[n] = alpha * (y[n-1] + x[n] - x[n-1]), alpha ≈ 0.969 @ 16kHz -> ~80Hz cutoff)
+  const hpfAlpha = 0.969;
+  let prevX = 0;
+  let prevY = 0;
+
+  for (let i = 0; i < sampleCount; i++) {
+    const x = pcmBuffer.readInt16LE(i * 2) / 32768.0;
+    const y = hpfAlpha * (prevY + x - prevX);
+    prevX = x;
+    prevY = y;
+    rawSamples[i] = Math.max(-1.0, Math.min(1.0, y));
+  }
+
+  // 2. 20ms(320샘플) 프레임 단위 에너지 분석으로 앞뒤 무음 구간 트리밍
+  const frameSize = 320;
+  const numFrames = Math.ceil(sampleCount / frameSize);
+  const frameRms = new Float32Array(numFrames);
+  let maxFrameRms = 0;
+
+  for (let f = 0; f < numFrames; f++) {
+    const start = f * frameSize;
+    const end = Math.min(sampleCount, start + frameSize);
+    let sumSq = 0;
+    for (let i = start; i < end; i++) {
+      const v = rawSamples[i]!;
+      sumSq += v * v;
+    }
+    const r = Math.sqrt(sumSq / Math.max(1, end - start));
+    frameRms[f] = r;
+    if (r > maxFrameRms) {
+      maxFrameRms = r;
+    }
+  }
+
+  // 동적 활성 발화 프레임 임계치 (배경 잡음 대비 실제 음성 시작/끝점 탐색)
+  const activeFrameThreshold = Math.max(0.004, Math.min(0.025, maxFrameRms * 0.12));
+  let firstActiveFrame = 0;
+  let lastActiveFrame = numFrames - 1;
+
+  while (
+    firstActiveFrame < numFrames &&
+    frameRms[firstActiveFrame]! < activeFrameThreshold
+  ) {
+    firstActiveFrame++;
+  }
+  while (
+    lastActiveFrame > firstActiveFrame &&
+    frameRms[lastActiveFrame]! < activeFrameThreshold
+  ) {
+    lastActiveFrame--;
+  }
+
+  // 전체가 무음에 가까우면 즉시 반환
+  if (firstActiveFrame >= numFrames) {
+    return {
+      samples: new Float32Array(0),
+      rms: 0,
+      peak: 0,
+      durationSec: 0,
+    };
+  }
+
+  // 앞쪽 3프레임(60ms), 뒤쪽 6프레임(120ms) 여유분 포함하여 슬라이스
+  const startSample = Math.max(0, (firstActiveFrame - 3) * frameSize);
+  const endSample = Math.min(sampleCount, (lastActiveFrame + 7) * frameSize);
+  const activeLength = Math.max(0, endSample - startSample);
+
+  // 트리밍된 실제 발화 구간의 RMS 및 Peak 측정
+  let sumSquares = 0;
+  let peak = 0;
+  for (let i = startSample; i < endSample; i++) {
+    const v = rawSamples[i]!;
+    const absV = Math.abs(v);
+    sumSquares += v * v;
+    if (absV > peak) {
+      peak = absV;
+    }
+  }
+
+  const rms = activeLength > 0 ? Math.sqrt(sumSquares / activeLength) : 0;
+  const durationSec = activeLength / SAMPLE_RATE;
+
+  // 3. 자동 이득 제어 (AGC): 작은 마이크 입력도 Whisper가 또렷하게 인식하도록 피크 0.85 기준으로 증폭 (최대 5배 제한으로 배경 백색소음 과증폭 방지)
+  const targetPeak = 0.85;
+  const gain =
+    peak > 0.01 ? Math.min(5.0, Math.max(1.0, targetPeak / peak)) : 1.0;
+
+  // 4. Whisper 디코더가 첫 음절과 끝 받침을 놓치지 않도록 앞 80ms, 뒤 240ms 무음 패딩 추가
+  const leadPad = Math.floor(SAMPLE_RATE * 0.08);
+  const trailPad = Math.floor(SAMPLE_RATE * 0.24);
+  const paddedSamples = new Float32Array(leadPad + activeLength + trailPad);
+
+  for (let i = 0; i < activeLength; i++) {
+    const amplified = rawSamples[startSample + i]! * gain;
+    paddedSamples[leadPad + i] = Math.max(-1.0, Math.min(1.0, amplified));
+  }
+
+  return { samples: paddedSamples, rms, peak, durationSec };
 };
 
 /**
- * Whisper 환각 문구 및 무의미한 기호 필터링
+ * Whisper STT 한국어 오인식 후처리 (호칭 '설아' 및 프로젝트 도메인 용어 발음 교정)
+ * - 음성 인식 모델이 문맥 없이 소리나는 대로 적은 호칭('서로야', '저라야', '바라야', '올아야' 등)과
+ *   에이전트/기술 용어('에이지와이', '에스티티', '티티에스', '제시작' 등)를 자연스럽게 보정합니다.
+ */
+export const postProcessKoreanSttText = (rawText: string): string => {
+  let text = rawText.trim();
+  if (!text) return "";
+
+  // 1. 문두의 설아 호칭 오인식 교정 ("서로야", "저라야", "바라야", "올아야", "수라야", "솔아야", "살아야", "성아야", "안녕 서라/저랑")
+  text = text.replace(
+    /^[.,!?~…"''"\s]*(?:설아야|서라야|설하야|소라야|사라야|서로야|저라야|바라야|바로야|올아야|수라야|솔아야|살아야|성아야|철아야|선아야)(?=[\s,!?~.]|$)/,
+    "설아야",
+  );
+  text = text.replace(
+    /^[.,!?~…"''"\s]*(?:서라|설하|소라|저라)(?=\s+(?:안녕|이리\s*온|들어와|통화|꺼져|나가|노래|음악|목소리|모델|대답|상태|프로세스|재시작|제시작|검색))/,
+    "설아",
+  );
+  text = text.replace(
+    /^(안녕[,.!?\s]*)(?:서라|설하|소라|사라|저라|저랑|서로)(?=[\s,!?~.]|$)/,
+    "$1설아",
+  );
+
+  // 2. 프로젝트 전용 에이전트 및 기술 키워드 발음 교정
+  text = text
+    // agy (Antigravity CLI) 발음 변형 교정
+    .replace(
+      /(?:에이\s*지\s*와이|에이\s*지\s*아이|에이\s*자\s*이|A\.?\s*G\.?\s*Y\.?|A\.?\s*J\.?\s*I\.?|AZI|AJI)/gi,
+      "agy",
+    )
+    .replace(
+      /(?:의지|애지|아지|에지|엘지|LG)(?=(?:로|에서|한테|에게|\s*호출|\s*상태|\s*지금|\s*작업|\s*실행))/gi,
+      "agy",
+    )
+    // STT / TTS 발음 변형 교정
+    .replace(/(?:에스\s*티\s*티|에스\s*피\s*티|SPT|에티케이스)/gi, "STT")
+    .replace(/(?:티\s*티\s*에스|디\s*티\s*에스|DTS)(?=\s*(?:목소리|보이스|음성|성능|끊기|속도|엔진|재생|설정|바꿔|개선)?)/gi, "TTS")
+    // 프로세스 재시작 발음 변형 교정
+    .replace(/브로스에서\s*(?:되시작|제시작|재시작)/g, "프로세스 재시작")
+    .replace(/프로세스\s*(?:되시작|제\s*시작|제시작)/g, "프로세스 재시작")
+    // 자주 틀리는 동사/명령어 교정
+    .replace(/기선\s*시켜\s*(?:봐|줘|가)/g, "개선시켜봐")
+    .replace(/개선\s*시켜\s*가(?=[.!?~\s]*$)/g, "개선시켜봐")
+    .replace(/틀어\s*져(?=[.!?~\s]*$)/g, "틀어줘");
+
+  return text.replace(/\s+/g, " ").trim();
+};
+
+/**
+ * Whisper 환각 문구 및 무의미한 기호/반복 패턴 필터링
  */
 const isMeaningfulTranscription = (text: string): boolean => {
   const cleaned = text
@@ -355,11 +548,25 @@ const isMeaningfulTranscription = (text: string): boolean => {
     return false;
   }
 
+  // 유튜브/방송 자막 계열 전형적인 Whisper 환각 패턴 차단
   if (
     cleaned.includes("자막제공") ||
     cleaned.includes("시청해주셔서") ||
-    cleaned.includes("구독과좋아요")
+    cleaned.includes("구독과좋아요") ||
+    cleaned.includes("좋아요와구독") ||
+    cleaned.includes("알림설정") ||
+    cleaned.includes("다음영상에서") ||
+    cleaned.includes("영상에서만나요") ||
+    cleaned.includes("mbc뉴스") ||
+    cleaned.includes("kbs뉴스") ||
+    cleaned.includes("sbs뉴스") ||
+    /뉴스[가-힣]{2,4}입니다$/.test(cleaned)
   ) {
+    return false;
+  }
+
+  // 동일 글자나 2~3글자 음절이 무의미하게 5회 이상 반복되는 루프 환각 차단 (예: "아아아아아", "네네네네네")
+  if (/^(.{1,3})\1{4,}$/.test(cleaned)) {
     return false;
   }
 
@@ -642,7 +849,10 @@ export const speakInVoiceChannel = async (
  */
 const matchVoiceSongCommand = (text: string): string | null => {
   const normalized = text
-    .replace(/^(?:설아야?|서라야?|설하야?|소라야?|사라야?)\s*/, "")
+    .replace(
+      /^(?:설아야?|서라야?|설하야?|소라야?|사라야?|서로야?|저라야?|바라야?|바로야?|올아야?|수라야?|솔아야?)\s*/,
+      "",
+    )
     .replace(/\s*(틀어\s*줘|재생해\s*줘|틀어|재생)\s*[.!?~]*$/, "")
     .trim();
 
@@ -677,7 +887,7 @@ const getHumanMemberCount = (voiceChannel: VoiceBasedChannel): number => {
 
 /**
  * 다인원 음성 채널에서 설아에게 직접 건넨 말/질문인지 판별
- * - Whisper STT에서 '설아'가 '서라', '설하', '소라', '사라' 등으로 오인식되는 경우까지 포괄
+ * - Whisper STT에서 '설아'가 '서라', '설하', '소라', '사라', '서로야', '저라야', '바라야', '올아야' 등으로 오인식되는 경우까지 포괄
  */
 const isAddressedToSeola = (text: string): boolean => {
   const normalized = text
@@ -686,7 +896,7 @@ const isAddressedToSeola = (text: string): boolean => {
     .trim();
 
   // 문장 앞부분이나 문장 내에서 설아를 부르는 호칭 포함 여부 확인
-  return /(?:^|[\s,!?~])(설아야?|서라야?|설하야?|소라야?|사라야?)(?=[\s,!?~.]|$)/.test(
+  return /(?:^|[\s,!?~])(설아야?|서라야?|설하야?|소라야?|사라야?|서로야|저라야|바라야|바로야|올아야|수라야|솔아야)(?=[\s,!?~.]|$)/.test(
     normalized,
   );
 };
@@ -697,11 +907,11 @@ const isAddressedToSeola = (text: string): boolean => {
 const stripSeolaWakeWord = (text: string): string => {
   const stripped = text
     .replace(
-      /^[.,!?~…"''"\s]*(?:설아야?|서라야?|설하야?|소라야?|사라야?)[\s,!?~.]*/,
+      /^[.,!?~…"''"\s]*(?:설아야?|서라야?|설하야?|소라야?|사라야?|서로야|저라야|바라야|바로야|올아야|수라야|솔아야)[\s,!?~.]*/,
       "",
     )
     .replace(
-      /[\s,!?~.]*(?:설아야?|서라야?|설하야?|소라야?|사라야?)[.,!?~…"''"\s]*$/,
+      /[\s,!?~.]*(?:설아야?|서라야?|설하야?|소라야?|사라야?|서로야|저라야|바라야|바로야|올아야|수라야|솔아야)[.,!?~…"''"\s]*$/,
       "",
     )
     .trim();
@@ -759,11 +969,11 @@ export const setupVoiceChatListener = (params: {
 
     session.activeUsers.add(userId);
 
-    // 800ms 동안 침묵이 유지되면 한 문장 발화가 끝난 것으로 판단
+    // 650ms 동안 침묵이 유지되면 한 문장 발화가 끝난 것으로 판단 (응답 체감 지연시간 단축)
     const opusStream = connection.receiver.subscribe(userId, {
       end: {
         behavior: EndBehaviorType.AfterSilence,
-        duration: 800,
+        duration: 650,
       },
     });
 
@@ -793,25 +1003,45 @@ export const setupVoiceChatListener = (params: {
 
       if (pcmChunks.length === 0) return;
       const fullPcm = Buffer.concat(pcmChunks);
-      const { samples, rms, durationSec } = pcm16ToFloat32(fullPcm);
+      const { samples, rms, peak, durationSec } = pcm16ToFloat32(fullPcm);
 
-      // 너무 짧은 잡음(클릭음, 숨소리)이거나 음량이 너무 작으면 무시
-      if (durationSec < MIN_SPEECH_SECONDS || rms < MIN_RMS_THRESHOLD) {
+      // 너무 짧은 잡음(클릭음, 숨소리)이거나 음량(RMS 및 Peak)이 너무 작으면 무시
+      if (
+        durationSec < MIN_SPEECH_SECONDS ||
+        rms < MIN_RMS_THRESHOLD ||
+        peak < MIN_PEAK_THRESHOLD
+      ) {
         return;
       }
 
       session.processingChain = session.processingChain
         .then(async () => {
           const transcriber = await preloadWhisperModel();
-          const result = await transcriber(samples, {
+          const sttStartMs = Date.now();
+          const result = await (
+            transcriber as unknown as (
+              audio: Float32Array,
+              options: Record<string, unknown>,
+            ) => Promise<{ text: string } | { text: string }[]>
+          )(samples, {
             language: "korean",
             task: "transcribe",
+            // 25초 이상 긴 발화일 때만 청크 슬라이딩 윈도우를 활성화하고, 일반 대화는 단일 패스로 빠르게 디코딩
+            ...(durationSec > 25
+              ? { chunk_length_s: 30, stride_length_s: 5 }
+              : {}),
+            max_new_tokens: 128,
+            num_beams: 1,
+            temperature: 0.0,
+            repetition_penalty: 1.15,
+            no_repeat_ngram_size: 3,
           });
+          const sttElapsedMs = Date.now() - sttStartMs;
 
           const rawText = Array.isArray(result)
             ? result.map((r) => r.text).join(" ")
             : result.text;
-          const transcribedText = rawText.trim();
+          const transcribedText = postProcessKoreanSttText(rawText);
 
           if (!isMeaningfulTranscription(transcribedText)) {
             return;
@@ -843,7 +1073,7 @@ export const setupVoiceChatListener = (params: {
             "사용자";
 
           console.log(
-            `[VoiceChat] 🎙️ ${userName} (${durationSec.toFixed(1)}s, rms=${rms.toFixed(3)}, 인원=${humanMemberCount}명): ${transcribedText}`,
+            `[VoiceChat] 🎙️ ${userName} (${durationSec.toFixed(1)}s, rms=${rms.toFixed(3)}, peak=${peak.toFixed(2)}, stt=${sttElapsedMs}ms, 인원=${humanMemberCount}명): ${transcribedText}`,
           );
 
           // 1. 음성 명령: 퇴장 ("설아야 꺼져", "설아야 나가")

@@ -789,9 +789,9 @@ export const detectFallbackToolIntent = (
 } | null => {
   const text = message.trim();
 
-  // 1. 재시작 요청 감지
+  // 1. 재시작 요청 감지 (STT 오인식 '제시작', '되시작', '브로스에서' 포함)
   if (
-    /(?:프로세스|봇|서버|시스템)?\s*(?:재시작|리부팅|리스타트|다시\s*켜|껐다\s*켜)\s*(?:해\s*줘|해|줄래|하자)?/i.test(
+    /(?:프로세스|브로스에서|봇|서버|시스템)?\s*(?:재시작|제시작|되시작|리부팅|리스타트|다시\s*켜|껐다\s*켜)\s*(?:해\s*줘|해|줄래|하자)?/i.test(
       text,
     )
   ) {
@@ -802,9 +802,9 @@ export const detectFallbackToolIntent = (
   }
 
   // 2. 자기개선(agy / hermes) 현재 작업/진행 상태 질문 감지 (자기개선 실행보다 먼저 체크)
-  //    (Whisper STT에서 agy가 'aji', '에이지와이', '아지', '에이자이' 등으로 오인식되는 경우도 포함)
+  //    (Whisper STT에서 agy가 'aji', 'azi', '에이지와이', '아지', '애지', '에이자이' 등으로 오인식되는 경우도 포함)
   if (
-    /(?:agy|aji|antigravity|안티그래비티|에이지와이|에이지아이|아지|hermes|헤르메스|자기\s*개선|코드\s*수정|작업)/i.test(
+    /(?:agy|aji|azi|antigravity|안티그래비티|에이지와이|에이지아이|아지|애지|에지|hermes|헤르메스|자기\s*개선|코드\s*수정|작업)/i.test(
       text,
     ) &&
     /(?:지금\s*뭐|무슨\s*작업|무슨\s*일|뭐\s*하고|뭐\s*해|뭐\s*하냐|상태|진행\s*상황|어디까지|다\s*됐|끝났|중이야|하고\s*있어)/i.test(
@@ -819,7 +819,7 @@ export const detectFallbackToolIntent = (
 
   // 3. 자기개선 (agy / hermes / 코드 수정) 실행 요청 감지
   if (
-    /(?:agy|antigravity|안티그래비티|hermes|헤르메스|자기\s*개선|스스로\s*개선|내\s*코드\s*수정|네\s*코드\s*수정|봇\s*코드\s*수정|기능\s*추가해)/i.test(
+    /(?:agy|aji|azi|antigravity|안티그래비티|에이지와이|에이지아이|아지|애지|hermes|헤르메스|자기\s*개선|스스로\s*개선|내\s*코드\s*수정|네\s*코드\s*수정|봇\s*코드\s*수정|기능\s*추가해|(?:stt|tts)\s*성능\s*(?:좀\s*)?개선)/i.test(
       text,
     )
   ) {
