@@ -360,10 +360,19 @@ export const handleSlashCommand = async (
     (interaction.member as GuildMember)?.displayName ||
     interaction.user.username;
 
+  // 1. 디스코드 3초 타임아웃("The application didn't respond in time")을 원천 방지하기 위해 진입 즉시 지연 응답 등록
+  try {
+    if (!interaction.deferred && !interaction.replied) {
+      await interaction.deferReply();
+    }
+  } catch (deferErr) {
+    console.warn(`[SlashCommands] deferReply 호출 실패 (이미 응답되었거나 만료됨):`, deferErr);
+    return;
+  }
+
   try {
     // 1. /chat (대화)
     if (commandName === "chat") {
-      await interaction.deferReply();
       const message = interaction.options.getString("message", true);
 
       // AI 응답 생성
@@ -396,7 +405,7 @@ export const handleSlashCommand = async (
           )
           .setFooter({ text: "설정 방법: /persona set [종류] 또는 !persona <이름>" });
 
-        await interaction.reply({ embeds: [embed] });
+        await interaction.editReply({ embeds: [embed] });
         return;
       }
 
@@ -408,7 +417,7 @@ export const handleSlashCommand = async (
           desc += `\n\n*지정된 커스텀 프롬프트:*\n\`\`\`${current.customPrompt.slice(0, 800)}\`\`\``;
         }
 
-        await interaction.reply({
+        await interaction.editReply({
           embeds: [
             new EmbedBuilder()
               .setColor(0x5865f2)
@@ -422,7 +431,7 @@ export const handleSlashCommand = async (
       if (sub === "set") {
         const type = interaction.options.getString("type", true) as PersonaId;
         const result = await setUserPersona(userName, type);
-        await interaction.reply({
+        await interaction.editReply({
           embeds: [
             new EmbedBuilder()
               .setColor(0x57f287)
@@ -438,7 +447,7 @@ export const handleSlashCommand = async (
       if (sub === "custom") {
         const prompt = interaction.options.getString("prompt", true);
         await setUserPersona(userName, "custom", prompt);
-        await interaction.reply({
+        await interaction.editReply({
           embeds: [
             new EmbedBuilder()
               .setColor(0x57f287)
@@ -460,14 +469,10 @@ export const handleSlashCommand = async (
 
       if (sub === "join") {
         if (!voiceChannel) {
-          await interaction.reply({
-            content: "❌ 먼저 음성 채널에 입장한 후 명령어를 실행해주세요!",
-            ephemeral: true,
-          });
+          await interaction.editReply("❌ 먼저 음성 채널에 입장한 후 명령어를 실행해주세요!");
           return;
         }
 
-        await interaction.deferReply();
         try {
           const connection = await connectToVoiceChannel(voiceChannel);
           if (sharedAudioPlayer) {
@@ -493,14 +498,14 @@ export const handleSlashCommand = async (
 
       if (sub === "leave") {
         if (!interaction.guildId) {
-          await interaction.reply({ content: "서버에서만 실행 가능합니다.", ephemeral: true });
+          await interaction.editReply("서버에서만 실행 가능합니다.");
           return;
         }
         removeVoiceChatSession(interaction.guildId);
         if (sharedStatusSnapshotGetter) {
           notifyDashboardStatusChanged(sharedStatusSnapshotGetter());
         }
-        await interaction.reply("👋 음성 채널에서 퇴장했습니다. 다음에 또 불러줘!");
+        await interaction.editReply("👋 음성 채널에서 퇴장했습니다. 다음에 또 불러줘!");
         return;
       }
 
@@ -510,7 +515,7 @@ export const handleSlashCommand = async (
         if (sharedStatusSnapshotGetter) {
           notifyDashboardStatusChanged(sharedStatusSnapshotGetter());
         }
-        await interaction.reply("🤫 음성 통화 듣기를 일시 중지했습니다. 재개하려면 `/voice resume`을 입력하세요.");
+        await interaction.editReply("🤫 음성 통화 듣기를 일시 중지했습니다. 재개하려면 `/voice resume`을 입력하세요.");
         return;
       }
 
@@ -520,7 +525,7 @@ export const handleSlashCommand = async (
         if (sharedStatusSnapshotGetter) {
           notifyDashboardStatusChanged(sharedStatusSnapshotGetter());
         }
-        await interaction.reply("🎙️ 음성 통화를 재개했습니다! 다시 말씀해 보세요.");
+        await interaction.editReply("🎙️ 음성 통화를 재개했습니다! 다시 말씀해 보세요.");
         return;
       }
 
@@ -538,7 +543,7 @@ export const handleSlashCommand = async (
               ? `• 접속 채널: **${currentSession.channelName}**\n• 현재 상태: **${currentSession.voiceChatEnabled ? "🟢 활성 (경청 중)" : "⏸️ 일시 정지"}**\n• 재생 모드: \`${currentSession.playbackMode}\`\n• 활성 화자 수: ${currentSession.activeSpeakerCount}명`
               : "현재 이 서버의 음성 채널에 접속해 있지 않습니다. `/voice join`으로 불러보세요!",
           );
-        await interaction.reply({ embeds: [embed] });
+        await interaction.editReply({ embeds: [embed] });
         return;
       }
     }
@@ -552,7 +557,7 @@ export const handleSlashCommand = async (
           .map((p) => `• **${p.label}** (\`${p.id}\`) — ${p.description}`)
           .join("\n");
 
-        await interaction.reply({
+        await interaction.editReply({
           embeds: [
             new EmbedBuilder()
               .setColor(0xff85a2)
@@ -568,17 +573,14 @@ export const handleSlashCommand = async (
 
       const updated = setVoicePreset(selected);
       if (!updated) {
-        await interaction.reply({
-          content: `❌ \`${selected}\` 목소리 프리셋을 찾을 수 없습니다.`,
-          ephemeral: true,
-        });
+        await interaction.editReply(`❌ \`${selected}\` 목소리 프리셋을 찾을 수 없습니다.`);
         return;
       }
 
       if (sharedStatusSnapshotGetter) {
         notifyDashboardStatusChanged(sharedStatusSnapshotGetter());
       }
-      await interaction.reply({
+      await interaction.editReply({
         embeds: [
           new EmbedBuilder()
             .setColor(0x57f287)
@@ -596,7 +598,6 @@ export const handleSlashCommand = async (
       const sub = interaction.options.getSubcommand();
 
       if (sub === "list") {
-        await interaction.deferReply();
         const [available, current] = await Promise.all([
           getAvailableModels(),
           getUserModel(userName),
@@ -616,14 +617,11 @@ export const handleSlashCommand = async (
 
       if (sub === "status") {
         const current = await getUserModel(userName);
-        await interaction.reply({
-          content: `🤖 **${userName}**님의 현재 대화 모델은 \`${current}\` 입니다.`,
-        });
+        await interaction.editReply(`🤖 **${userName}**님의 현재 대화 모델은 \`${current}\` 입니다.`);
         return;
       }
 
       if (sub === "set") {
-        await interaction.deferReply();
         const target = interaction.options.getString("name", true);
         const result = await setUserModel(userName, target);
         if (result.success && result.model) {
@@ -647,7 +645,7 @@ export const handleSlashCommand = async (
         const listText = Object.keys(songMap)
           .map((title) => `• \`${title}\``)
           .join(", ");
-        await interaction.reply({
+        await interaction.editReply({
           embeds: [
             new EmbedBuilder()
               .setColor(0xff85a2)
@@ -662,7 +660,7 @@ export const handleSlashCommand = async (
       if (sub === "stop") {
         if (!interaction.guildId) return;
         setGuildPlaybackMode(interaction.guildId, "idle");
-        await interaction.reply("⏹️ 음악 재생을 중지했습니다.");
+        await interaction.editReply("⏹️ 음악 재생을 중지했습니다.");
         return;
       }
 
@@ -670,24 +668,18 @@ export const handleSlashCommand = async (
         const title = interaction.options.getString("title", true);
         const songPath = songMap[title];
         if (!songPath) {
-          await interaction.reply({
-            content: `❌ \`${title}\` 곡을 찾을 수 없습니다. \`/music list\`를 확인해보세요.`,
-            ephemeral: true,
-          });
+          await interaction.editReply(`❌ \`${title}\` 곡을 찾을 수 없습니다. \`/music list\`를 확인해보세요.`);
           return;
         }
 
         const member = interaction.member as GuildMember;
         const voiceChannel = member?.voice?.channel as VoiceBasedChannel | null;
         if (!voiceChannel) {
-          await interaction.reply({
-            content: "❌ 먼저 음성 채널에 입장한 후 음악을 재생해주세요!",
-            ephemeral: true,
-          });
+          await interaction.editReply("❌ 먼저 음성 채널에 입장한 후 음악을 재생해주세요!");
           return;
         }
 
-        await interaction.reply(`🎶 **${title}** 곡을 재생합니다!`);
+        await interaction.editReply(`🎶 **${title}** 곡을 재생합니다!`);
         // 백그라운드에서 음성 채널 연결 후 음악 재생
         try {
           const connection = await connectToVoiceChannel(voiceChannel);
@@ -711,7 +703,6 @@ export const handleSlashCommand = async (
 
     // 7. /search (검색)
     if (commandName === "search") {
-      await interaction.deferReply();
       const query = interaction.options.getString("query", true);
       const result = await performWebSearch(query);
       await interaction.editReply(`🔍 **검색 결과: "${query}"**\n\n${result.slice(0, 1900)}`);
@@ -723,14 +714,12 @@ export const handleSlashCommand = async (
       const sub = interaction.options.getSubcommand();
 
       if (sub === "status") {
-        await interaction.deferReply();
         const report = await getSelfImproveStatusReport();
         await interaction.editReply(`🛠️ **자기개선 에이전트(agy) 상태**\n${report}`);
         return;
       }
 
       if (sub === "run") {
-        await interaction.deferReply();
         const instruction = interaction.options.getString("instruction", true);
         const engine = (interaction.options.getString("engine") || "agy") as "agy" | "hermes";
 
@@ -754,13 +743,12 @@ export const handleSlashCommand = async (
         interaction.options.getString("reason") ||
         `${userName}님의 슬래시 명령어 요청`;
       const msg = scheduleBotRestart(reason);
-      await interaction.reply(`🔄 ${msg}`);
+      await interaction.editReply(`🔄 ${msg}`);
       return;
     }
 
     // 10. /status (상태)
     if (commandName === "status") {
-      await interaction.deferReply();
       const report = await getBotStatusReport();
       await interaction.editReply(`📊 **설아 봇 상태 보고서**\n${report}`);
       return;
@@ -818,20 +806,24 @@ export const handleSlashCommand = async (
         )
         .setFooter({ text: "슬래시 명령어(/) 또는 일반 채팅 프리픽스(!) 모두 지원합니다." });
 
-      await interaction.reply({ embeds: [embed] });
+      await interaction.editReply({ embeds: [embed] });
       return;
     }
   } catch (error: any) {
     console.error(`[SlashCommands] /${commandName} 처리 중 오류:`, error);
-    if (interaction.deferred || interaction.replied) {
-      await interaction.editReply({
-        content: `❌ 명령어 처리 중 오류가 발생했습니다: ${error.message}`,
-      });
-    } else {
-      await interaction.reply({
-        content: `❌ 명령어 처리 중 오류가 발생했습니다: ${error.message}`,
-        ephemeral: true,
-      });
+    try {
+      if (interaction.deferred || interaction.replied) {
+        await interaction.editReply({
+          content: `❌ 명령어 처리 중 오류가 발생했습니다: ${error.message}`,
+        });
+      } else {
+        await interaction.reply({
+          content: `❌ 명령어 처리 중 오류가 발생했습니다: ${error.message}`,
+          ephemeral: true,
+        });
+      }
+    } catch {
+      // 이미 타임아웃된 인터랙션 무시
     }
   }
 };
