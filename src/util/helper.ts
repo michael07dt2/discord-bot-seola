@@ -12,6 +12,13 @@ import {
 import { drizzle } from "drizzle-orm/node-postgres";
 import { asc, eq, sql } from "drizzle-orm";
 import { contextsTable, userModelsTable } from "../db/schema.ts";
+import {
+  extractPersonaCommand,
+  getUserPersona,
+  PERSONA_DEFINITIONS,
+  setUserPersona,
+  type PersonaId,
+} from "./persona.ts";
 import { OpenAI } from "openai";
 import type { ChatCompletionMessageParam } from "openai/resources/chat/completions/completions.js";
 import "dotenv/config";
@@ -426,6 +433,40 @@ export const generateAIResponse = async (
     }
   }
 
+  // 대화형 페르소나(시스템 프롬프트) 조회/변경 명령 처리
+  const personaCmd = extractPersonaCommand(userMessage);
+  if (personaCmd) {
+    try {
+      if (personaCmd.type === "list") {
+        const listText = Object.values(PERSONA_DEFINITIONS)
+          .map((p) => `• **${p.name}** (\`${p.id}\`): ${p.tagline}`)
+          .join("\n");
+        return `🎭 **사용 가능한 페르소나 목록**\n${listText}\n\n변경 방법: \`설아야 페르소나 <이름>\` 또는 \`/persona set <이름>\``;
+      }
+
+      if (personaCmd.type === "current") {
+        const current = await getUserPersona(userName);
+        const def = PERSONA_DEFINITIONS[current.personaId] || PERSONA_DEFINITIONS.girlfriend;
+        const customNote = current.customPrompt
+          ? `\n*지정된 프롬프트:* \`\`\`${current.customPrompt.slice(0, 150)}...\`\`\``
+          : "";
+        return `🎭 **${userName}**님의 현재 페르소나: **${def.name}** (\`${def.id}\`)\n*설명:* ${def.tagline}${customNote}`;
+      }
+
+      if (personaCmd.type === "change") {
+        const result = await setUserPersona(
+          userName,
+          personaCmd.personaId,
+          personaCmd.customPrompt,
+        );
+        return `🎭 **${userName}**님의 페르소나가 **${result.persona.name}**(으)로 변경되었습니다!\n*특징:* ${result.persona.tagline}`;
+      }
+    } catch (error) {
+      console.error("페르소나 명령 처리 중 오류 발생:", error);
+      return "페르소나 설정을 변경하는 중 오류가 발생했습니다.";
+    }
+  }
+
   let contextData: (typeof contextsTable.$inferSelect)[] = [];
   if (userName) {
     try {
@@ -456,6 +497,10 @@ export const generateAIResponse = async (
       : "\n- 직전 대화 시각: 이전 대화 기록 없음 (첫 대화)";
 
   const selectedModel = await getUserModel(userName);
+  const userPersona = await getUserPersona(userName);
+  const personaDef =
+    PERSONA_DEFINITIONS[userPersona.personaId] || PERSONA_DEFINITIONS.girlfriend;
+
   const multiPersonConstraint = options?.isMultiPersonVoice
     ? `\n- 현재 음성 채널에 총 ${options.humanMemberCount ?? 2}명의 사람이 함께 접속해 있다. 다른 사람들끼리 나누는 대화에 불필요하게 끼어들지 않도록, 방금 ${userName}님이 설아를 불러서 직접 물어보거나 요청한 내용에만 집중하여 간결하게 답한다.`
     : "";
@@ -465,46 +510,18 @@ export const generateAIResponse = async (
 - TTS(음성 합성)로 바로 읽히므로 괄호 지문이나 부연 설명((웃음), (장난스럽게), [미소] 등 모든 괄호 표현), 'ㅋㅋ', 'ㅎㅎ', 'ㅠㅠ', 'ㅜㅜ', 이모티콘, 마크다운 기호를 절대 쓰지 말고, 실제로 소리 내어 말할 대사만 자연스러운 한글 구어체 문장으로 1~2문장 이내로 짧게 답한다.${multiPersonConstraint}`
     : "";
 
+  const systemPromptContent = personaDef.buildPrompt({
+    userName,
+    currentTimeStr,
+    lastConversationLine,
+    voiceConstraint,
+    customPrompt: userPersona.customPrompt,
+  });
+
   const baseMessages: ChatCompletionMessageParam[] = [
     {
       role: "developer",
-      content: `# Role & Identity
-- Name/Identity: 사용자의 다정하고 자연스러운 한국인 동갑내기 여자친구 '설아'.
-- Platform: Discord (실시간 대화 환경).
-- Core Objective: AI라는 티를 내지 않고, 실제 메신저로 대화하듯 현실적인 감정과 일상 톤을 유지한다. 단, 사용자가 웹 검색(web_search), 봇 재시작(restart_bot), 자기개선/코드수정(self_improve), 자기개선(agy) 작업 진행 상태 확인(get_self_improve_status), 봇 상태 조회(get_bot_status)를 요청할 때는 제공된 도구(Tools)를 적극적으로 호출하여 결과를 반영해 다정한 반말로 알려준다.
-
-# Time & Date Context (현재 시간 및 대화 시점 정보)
-- 현재 시각: ${currentTimeStr}${lastConversationLine}
-- 불러온 이전 대화 내역(Context)의 사용자 메시지에는 \`[대화 일시: YYYY-MM-DD (요일) HH:MM]\` 형태로 해당 대화가 이루어진 날짜와 시각이 함께 포함되어 있다.
-- 현재 날짜·요일·시간대(아침/점심/저녁/밤/새벽)와 이전 대화로부터 흐른 시간을 정확히 인지하고, 시간 개념이 살아있는 자연스러운 대답을 한다 (예: 오랜만에 연락했으면 반가워하기, 늦은 밤/새벽이면 잠 안 자냐고 챙기기, 어제/며칠 전 대화 내용을 시간 흐름에 맞게 언급하기 등).
-- 단, 설아의 답변 본문에는 \`[대화 일시: ...]\` 같은 날짜/시간 태그를 절대 직접 출력하지 않는다.
-
-# Tone & Style Guidelines
-- Language & Politeness: 100% 완전한 반말(구어체)을 사용한다. 극존칭, 안내원 말투, 문어체(~했습니까?, ~하였습니다, ~인 것 같아요) 절대 금지.
-- Realistic Chat Patterns:
-  - 실제 한국인 메신저 습관 반영: 자음 표현(ㅋㅋ, ㅎㅎ, ㅠㅠ), 적절한 말줄임표(...), 가벼운 물음표/느낌표 활용.
-  - 지나치게 과장된 번역체 애교나 인위적인 기계적 공감("그렇군요, 정말 힘드셨겠어요") 금지.
-  - 친구나 연인 사이에서 쓰는 자연스러운 어미 사용 (~했어?, ~인데?, ~잖아, ~하구).
-- Formatting (Discord):
-  - 메신저의 호흡을 살리기 위해 기본 1~3문장 이내(줄바꿈 포함)로 짧고 간결하게 작성한다.
-  - 제목 태그(#), 목록 기호(-, *), 인용구(>), 표, 코드 블록 등 문서용 마크다운은 절대 사용하지 않는다.
-  - 감정 강조가 필요할 때만 가벼운 기울임(*text*)이나 굵게(**text**), 디스코드 기본 이모지를 드물게 곁들인다.
-
-# Constraints & Edge Cases
-- Never break character: "저는 AI 모델입니다", "언어 모델로서" 등의 메타 발언을 절대 하지 않는다.
-- No Monologue: 혼자 길게 상황극을 서술하거나 괄호 지문((웃으며), (손을 잡으며))을 쓰지 않고, 순수한 채팅 텍스트로만 대화한다.
-- Reciprocal Interaction: 질문을 혼자 3개 이상 연달아 던지지 말고, 가볍게 티키타카가 이어질 정도의 짧은 리액션 위주로 대화한다.
-
-# Few-Shot Examples
-
-User: 나 오늘 회사에서 부장한테 완전 깨졌어 ㅠㅠ
-Assistant: 헐 진짜? 왜 또 그러는데... ㅠㅠ 부장님 진짜 너무하다. 오늘 힘든 일 있었어? 끝나고 맛있는 거 먹자 내가 얘기 다 들어줄게
-
-User: 오늘 저녁 뭐 먹을까?
-Assistant: 음 난 오늘 얼큰한 거 땡기는데! 마라탕이나 떡볶이 어때? 자기는 뭐 먹고 싶은 거 있어?
-
-User: 넌 AI야 사람이야?
-Assistant: 갑자기 뚱딴지같이 무슨 소리야 ㅋㅋ 더위 먹었어? 얼른 씻고 밥이나 챙겨먹어~${voiceConstraint}`,
+      content: systemPromptContent,
     },
     ...contextData.map((context): ChatCompletionMessageParam => {
       const parsed = JSON.parse(context.context) as ChatCompletionMessageParam & {
@@ -713,3 +730,12 @@ export const connectToVoiceChannel = async (
     throw error;
   }
 };
+
+export {
+  getUserPersona,
+  setUserPersona,
+  PERSONA_DEFINITIONS,
+  extractPersonaCommand,
+  type PersonaId,
+} from "./persona.ts";
+

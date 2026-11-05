@@ -1,0 +1,837 @@
+import {
+  ChatInputCommandInteraction,
+  Client,
+  EmbedBuilder,
+  GuildMember,
+  REST,
+  Routes,
+  SlashCommandBuilder,
+  type VoiceBasedChannel,
+} from "discord.js";
+import {
+  AudioPlayer,
+  getVoiceConnection,
+} from "@discordjs/voice";
+import {
+  generateAIResponse,
+  connectToVoiceChannel,
+  getAvailableModels,
+  getUserModel,
+  getUserPersona,
+  PERSONA_DEFINITIONS,
+  setUserModel,
+  setUserPersona,
+  type PersonaId,
+} from "./helper.ts";
+import { songMap } from "./songmap.ts";
+import {
+  getBotStatusReport,
+  getSelfImproveStatusReport,
+  performWebSearch,
+  runSelfImprovement,
+  scheduleBotRestart,
+} from "./tools.ts";
+import {
+  getActiveVoiceSessions,
+  getCurrentVoicePreset,
+  removeVoiceChatSession,
+  setGuildPlaybackMode,
+  setVoiceChatEnabled,
+  setVoicePreset,
+  setupVoiceChatListener,
+  speakInVoiceChannel,
+  VOICE_PRESETS,
+} from "./voiceChat.ts";
+import {
+  notifyDashboardStatusChanged,
+  type DashboardStatusSnapshot,
+} from "./dashboard.ts";
+
+// index.ts로부터 공유받을 런타임 의존성 (플레이어 및 대시보드 스냅샷 헬퍼)
+let sharedAudioPlayer: AudioPlayer | null = null;
+let sharedStatusSnapshotGetter: (() => DashboardStatusSnapshot) | null = null;
+
+export const setSlashCommandDependencies = (deps: {
+  player: AudioPlayer;
+  getDashboardStatusSnapshot: () => DashboardStatusSnapshot;
+}) => {
+  sharedAudioPlayer = deps.player;
+  sharedStatusSnapshotGetter = deps.getDashboardStatusSnapshot;
+};
+
+// 슬래시 명령어 정의
+export const slashCommands = [
+  new SlashCommandBuilder()
+    .setName("chat")
+    .setNameLocalization("ko", "대화")
+    .setDescription("설아와 텍스트로 대화를 나눕니다.")
+    .addStringOption((opt) =>
+      opt
+        .setName("message")
+        .setNameLocalization("ko", "메시지")
+        .setDescription("설아에게 보낼 메시지")
+        .setRequired(true),
+    ),
+
+  new SlashCommandBuilder()
+    .setName("persona")
+    .setNameLocalization("ko", "페르소나")
+    .setDescription("설아의 성격과 시스템 프롬프트를 확인하거나 변경합니다.")
+    .addSubcommand((sub) =>
+      sub
+        .setName("list")
+        .setNameLocalization("ko", "목록")
+        .setDescription("사용 가능한 모든 페르소나 목록을 조회합니다."),
+    )
+    .addSubcommand((sub) =>
+      sub
+        .setName("status")
+        .setNameLocalization("ko", "현재상태")
+        .setDescription("현재 내게 적용된 페르소나 정보를 확인합니다."),
+    )
+    .addSubcommand((sub) =>
+      sub
+        .setName("set")
+        .setNameLocalization("ko", "설정")
+        .setDescription("지정한 페르소나로 변경합니다.")
+        .addStringOption((opt) =>
+          opt
+            .setName("type")
+            .setNameLocalization("ko", "종류")
+            .setDescription("변경할 페르소나를 선택하세요.")
+            .setRequired(true)
+            .addChoices(
+              { name: "설아 (다정한 동갑내기 여자친구)", value: "girlfriend" },
+              { name: "설아 비서 (스마트한 AI 비서)", value: "assistant" },
+              { name: "츤데레 설아 (소꿉친구)", value: "tsundere" },
+              { name: "설아 선배 (듬직한 멘토)", value: "senior" },
+              { name: "발랄한 설아 (귀여운 마스코트)", value: "cute" },
+              { name: "사용자 정의 (Custom)", value: "custom" },
+            ),
+        ),
+    )
+    .addSubcommand((sub) =>
+      sub
+        .setName("custom")
+        .setNameLocalization("ko", "커스텀프롬프트")
+        .setDescription("원하는 시스템 프롬프트를 직접 입력하여 설정합니다.")
+        .addStringOption((opt) =>
+          opt
+            .setName("prompt")
+            .setNameLocalization("ko", "프롬프트")
+            .setDescription("설아에게 적용할 상세 시스템 프롬프트 내용")
+            .setRequired(true),
+        ),
+    ),
+
+  new SlashCommandBuilder()
+    .setName("voice")
+    .setNameLocalization("ko", "음성통화")
+    .setDescription("음성 채널 연결 및 실시간 통화를 제어합니다.")
+    .addSubcommand((sub) =>
+      sub
+        .setName("join")
+        .setNameLocalization("ko", "입장")
+        .setDescription("내가 접속한 음성 채널에 설아를 부릅니다."),
+    )
+    .addSubcommand((sub) =>
+      sub
+        .setName("leave")
+        .setNameLocalization("ko", "퇴장")
+        .setDescription("설아를 음성 채널에서 퇴장시킵니다."),
+    )
+    .addSubcommand((sub) =>
+      sub
+        .setName("pause")
+        .setNameLocalization("ko", "음성중지")
+        .setDescription("음성 채널에서 듣기/답변을 일시 정지합니다."),
+    )
+    .addSubcommand((sub) =>
+      sub
+        .setName("resume")
+        .setNameLocalization("ko", "음성재개")
+        .setDescription("일시 정지된 음성 듣기/답변을 다시 재개합니다."),
+    )
+    .addSubcommand((sub) =>
+      sub
+        .setName("status")
+        .setNameLocalization("ko", "상태")
+        .setDescription("현재 음성 통화 세션 상태를 확인합니다."),
+    ),
+
+  new SlashCommandBuilder()
+    .setName("preset")
+    .setNameLocalization("ko", "목소리")
+    .setDescription("MeloTTS-Korean 음성 프리셋을 변경하거나 조회합니다.")
+    .addStringOption((opt) =>
+      opt
+        .setName("voice")
+        .setNameLocalization("ko", "목소리선택")
+        .setDescription("변경할 음성 프리셋")
+        .setRequired(false)
+        .addChoices(
+          { name: "🌸 설아 (기본 20대 여성톤, MeloTTS)", value: "seola" },
+          { name: "✨ 발랄 (톤 업, 귀엽고 밝은 어투)", value: "lively" },
+          { name: "☕ 차분 (성숙하고 차분한 어투)", value: "calm" },
+          { name: "🌙 속삭임 (나직하고 부드러운 톤)", value: "whisper" },
+          { name: "🎙️ 멜로 (중립 원음 기준)", value: "melo" },
+          { name: "💎 아바 (Edge 다국어 음성 Ava)", value: "ava" },
+          { name: "🎀 선희 (Edge 한국어 음성 SunHi)", value: "sunhi" },
+        ),
+    ),
+
+  new SlashCommandBuilder()
+    .setName("model")
+    .setNameLocalization("ko", "모델")
+    .setDescription("Ollama 대화 모델을 확인하거나 변경합니다.")
+    .addSubcommand((sub) =>
+      sub
+        .setName("list")
+        .setNameLocalization("ko", "목록")
+        .setDescription("사용 가능한 로컬 Ollama 모델 목록을 조회합니다."),
+    )
+    .addSubcommand((sub) =>
+      sub
+        .setName("status")
+        .setNameLocalization("ko", "현재상태")
+        .setDescription("현재 내게 설정된 대화 모델을 확인합니다."),
+    )
+    .addSubcommand((sub) =>
+      sub
+        .setName("set")
+        .setNameLocalization("ko", "변경")
+        .setDescription("대화 모델을 변경합니다.")
+        .addStringOption((opt) =>
+          opt
+            .setName("name")
+            .setNameLocalization("ko", "모델명")
+            .setDescription("변경할 모델명 (예: gemma4:12b, gemma4)")
+            .setRequired(true),
+        ),
+    ),
+
+  new SlashCommandBuilder()
+    .setName("music")
+    .setNameLocalization("ko", "음악")
+    .setDescription("음성 채널에서 음악을 재생하거나 멈춥니다.")
+    .addSubcommand((sub) =>
+      sub
+        .setName("play")
+        .setNameLocalization("ko", "재생")
+        .setDescription("곡을 재생합니다.")
+        .addStringOption((opt) =>
+          opt
+            .setName("title")
+            .setNameLocalization("ko", "곡명")
+            .setDescription("재생할 곡명 키워드")
+            .setRequired(true)
+            .addChoices(
+              { name: "아리아 (Aria)", value: "아리아" },
+              { name: "어웨이크 (Awake)", value: "어웨이크" },
+              { name: "브레이크 더 체인 (Break the Chain)", value: "브레이크 더 체인" },
+              { name: "크레이지 (Crazy)", value: "크레이지" },
+              { name: "리다인 (Redine)", value: "리다인" },
+              { name: "노 머시 (No Mercy)", value: "노 머시" },
+              { name: "세컨드 라이트 (Second Light)", value: "세컨드 라이트" },
+              { name: "댓 걸 (That Girl)", value: "댓 걸" },
+              { name: "바토리 (Bathory)", value: "바토리" },
+              { name: "미래소녀 (Future Girl)", value: "미래소녀" },
+            ),
+        ),
+    )
+    .addSubcommand((sub) =>
+      sub
+        .setName("stop")
+        .setNameLocalization("ko", "중지")
+        .setDescription("현재 재생 중인 음악을 중지합니다."),
+    )
+    .addSubcommand((sub) =>
+      sub
+        .setName("list")
+        .setNameLocalization("ko", "목록")
+        .setDescription("재생 가능한 음악 목록을 확인합니다."),
+    ),
+
+  new SlashCommandBuilder()
+    .setName("search")
+    .setNameLocalization("ko", "검색")
+    .setDescription("실시간 웹, 뉴스, 위키 정보를 검색합니다.")
+    .addStringOption((opt) =>
+      opt
+        .setName("query")
+        .setNameLocalization("ko", "검색어")
+        .setDescription("검색할 키워드나 질문")
+        .setRequired(true),
+    ),
+
+  new SlashCommandBuilder()
+    .setName("improve")
+    .setNameLocalization("ko", "자기개선")
+    .setDescription("Antigravity CLI(agy) 또는 Hermes를 호출해 봇을 개선합니다.")
+    .addSubcommand((sub) =>
+      sub
+        .setName("status")
+        .setNameLocalization("ko", "진행상태")
+        .setDescription("현재 자기개선 에이전트(agy)의 작업 상태를 조회합니다."),
+    )
+    .addSubcommand((sub) =>
+      sub
+        .setName("run")
+        .setNameLocalization("ko", "지시실행")
+        .setDescription("자기개선 작업을 지시합니다.")
+        .addStringOption((opt) =>
+          opt
+            .setName("instruction")
+            .setNameLocalization("ko", "지시내용")
+            .setDescription("개선하거나 추가할 기능 설명")
+            .setRequired(true),
+        )
+        .addStringOption((opt) =>
+          opt
+            .setName("engine")
+            .setNameLocalization("ko", "엔진")
+            .setDescription("사용할 에이전트 엔진 (기본값: agy)")
+            .setRequired(false)
+            .addChoices(
+              { name: "Antigravity CLI (agy)", value: "agy" },
+              { name: "Hermes CLI (hermes)", value: "hermes" },
+            ),
+        ),
+    ),
+
+  new SlashCommandBuilder()
+    .setName("restart")
+    .setNameLocalization("ko", "재시작")
+    .setDescription("설아 봇 프로세스를 안전하게 재시작합니다.")
+    .addStringOption((opt) =>
+      opt
+        .setName("reason")
+        .setNameLocalization("ko", "사유")
+        .setDescription("재시작 사유")
+        .setRequired(false),
+    ),
+
+  new SlashCommandBuilder()
+    .setName("status")
+    .setNameLocalization("ko", "상태")
+    .setDescription("봇 시스템 상태, 리소스, 음성 통화 상태를 확인합니다."),
+
+  new SlashCommandBuilder()
+    .setName("help")
+    .setNameLocalization("ko", "도움말")
+    .setDescription("설아 봇의 전체 기능과 슬래시 명령어 안내를 확인합니다."),
+];
+
+// 디스코드 API에 슬래시 명령어 등록
+export const registerSlashCommands = async (client: Client): Promise<void> => {
+  const token = process.env.DISCORD_TOKEN;
+  const appId = process.env.APP_ID || client.user?.id;
+
+  if (!token || !appId) {
+    console.warn(
+      "슬래시 명령어 등록 건너뜀: DISCORD_TOKEN 또는 APP_ID가 설정되지 않았습니다.",
+    );
+    return;
+  }
+
+  try {
+    const rest = new REST({ version: "10" }).setToken(token);
+    const commandsJson = slashCommands.map((cmd) => cmd.toJSON());
+
+    console.log(`[SlashCommands] 총 ${commandsJson.length}개의 슬래시 명령어 등록을 시작합니다...`);
+
+    // 글로벌 명령어 등록 (전체 길드 적용)
+    await rest.put(Routes.applicationCommands(appId), {
+      body: commandsJson,
+    });
+
+    console.log(`[SlashCommands] 총 ${commandsJson.length}개의 슬래시 명령어가 성공적으로 등록되었습니다!`);
+  } catch (error) {
+    console.error("[SlashCommands] 슬래시 명령어 등록 중 오류 발생:", error);
+  }
+};
+
+// 슬래시 인터랙션 이벤트 처리 핸들러
+export const handleSlashCommand = async (
+  interaction: ChatInputCommandInteraction,
+): Promise<void> => {
+  const { commandName } = interaction;
+  const userName =
+    (interaction.member as GuildMember)?.displayName ||
+    interaction.user.username;
+
+  try {
+    // 1. /chat (대화)
+    if (commandName === "chat") {
+      await interaction.deferReply();
+      const message = interaction.options.getString("message", true);
+
+      // AI 응답 생성
+      const reply = await generateAIResponse(userName, message, {
+        channel: interaction.channel?.isSendable() ? interaction.channel : null,
+      });
+
+      if (reply) {
+        await interaction.editReply(reply.slice(0, 2000));
+      } else {
+        await interaction.editReply("미안해, 지금은 대답하기가 조금 어려워.");
+      }
+      return;
+    }
+
+    // 2. /persona (페르소나)
+    if (commandName === "persona") {
+      const sub = interaction.options.getSubcommand();
+
+      if (sub === "list") {
+        const embed = new EmbedBuilder()
+          .setColor(0xff85a2)
+          .setTitle("🎭 설아 페르소나(시스템 프롬프트) 목록")
+          .setDescription("사용자별로 각기 다른 성격과 대화 스타일을 적용할 수 있습니다.")
+          .addFields(
+            Object.values(PERSONA_DEFINITIONS).map((p) => ({
+              name: `${p.name} (\`${p.id}\`)`,
+              value: `${p.tagline}\n*${p.description}* (추천 목소리: \`${p.recommendedVoice}\`)`,
+            })),
+          )
+          .setFooter({ text: "설정 방법: /persona set [종류] 또는 !persona <이름>" });
+
+        await interaction.reply({ embeds: [embed] });
+        return;
+      }
+
+      if (sub === "status") {
+        const current = await getUserPersona(userName);
+        const def = PERSONA_DEFINITIONS[current.personaId] || PERSONA_DEFINITIONS.girlfriend;
+        let desc = `**${userName}**님의 현재 페르소나는 **${def.name}** 입니다.\n\n*특징:* ${def.tagline}`;
+        if (current.customPrompt) {
+          desc += `\n\n*지정된 커스텀 프롬프트:*\n\`\`\`${current.customPrompt.slice(0, 800)}\`\`\``;
+        }
+
+        await interaction.reply({
+          embeds: [
+            new EmbedBuilder()
+              .setColor(0x5865f2)
+              .setTitle("🎭 현재 페르소나 설정")
+              .setDescription(desc),
+          ],
+        });
+        return;
+      }
+
+      if (sub === "set") {
+        const type = interaction.options.getString("type", true) as PersonaId;
+        const result = await setUserPersona(userName, type);
+        await interaction.reply({
+          embeds: [
+            new EmbedBuilder()
+              .setColor(0x57f287)
+              .setTitle("🎭 페르소나 변경 완료!")
+              .setDescription(
+                `**${userName}**님의 페르소나가 **${result.persona.name}**(으)로 변경되었습니다.\n\n*특징:* ${result.persona.tagline}\n*추천 목소리:* \`${result.persona.recommendedVoice}\` (원하시면 \`/preset voice:${result.persona.recommendedVoice}\` 로 변경 가능)`,
+              ),
+          ],
+        });
+        return;
+      }
+
+      if (sub === "custom") {
+        const prompt = interaction.options.getString("prompt", true);
+        await setUserPersona(userName, "custom", prompt);
+        await interaction.reply({
+          embeds: [
+            new EmbedBuilder()
+              .setColor(0x57f287)
+              .setTitle("🎭 사용자 정의(Custom) 페르소나 등록 완료!")
+              .setDescription(
+                `**${userName}**님만의 커스텀 시스템 프롬프트가 설정되었습니다.\n\n*설정된 프롬프트:*\n\`\`\`${prompt.slice(0, 1000)}\`\`\``,
+              ),
+          ],
+        });
+        return;
+      }
+    }
+
+    // 3. /voice (음성통화)
+    if (commandName === "voice") {
+      const sub = interaction.options.getSubcommand();
+      const member = interaction.member as GuildMember;
+      const voiceChannel = member?.voice?.channel as VoiceBasedChannel | null;
+
+      if (sub === "join") {
+        if (!voiceChannel) {
+          await interaction.reply({
+            content: "❌ 먼저 음성 채널에 입장한 후 명령어를 실행해주세요!",
+            ephemeral: true,
+          });
+          return;
+        }
+
+        await interaction.deferReply();
+        try {
+          const connection = await connectToVoiceChannel(voiceChannel);
+          if (sharedAudioPlayer) {
+            setupVoiceChatListener({
+              client: interaction.client,
+              connection,
+              voiceChannel,
+              textChannel: interaction.channel?.isSendable() ? interaction.channel : null,
+              player: sharedAudioPlayer,
+            });
+            if (sharedStatusSnapshotGetter) {
+              notifyDashboardStatusChanged(sharedStatusSnapshotGetter());
+            }
+          }
+          await interaction.editReply(
+            `🌸 **${voiceChannel.name}** 음성 채널에 설아가 입장했습니다! 이제 자유롭게 말씀해 보세요. (1:1 통화 시 즉시 대화, 다수일 땐 '설아야' 호출)`,
+          );
+        } catch (err: any) {
+          await interaction.editReply(`❌ 음성 채널 입장 실패: ${err.message}`);
+        }
+        return;
+      }
+
+      if (sub === "leave") {
+        if (!interaction.guildId) {
+          await interaction.reply({ content: "서버에서만 실행 가능합니다.", ephemeral: true });
+          return;
+        }
+        removeVoiceChatSession(interaction.guildId);
+        if (sharedStatusSnapshotGetter) {
+          notifyDashboardStatusChanged(sharedStatusSnapshotGetter());
+        }
+        await interaction.reply("👋 음성 채널에서 퇴장했습니다. 다음에 또 불러줘!");
+        return;
+      }
+
+      if (sub === "pause") {
+        if (!interaction.guildId) return;
+        setVoiceChatEnabled(interaction.guildId, false);
+        if (sharedStatusSnapshotGetter) {
+          notifyDashboardStatusChanged(sharedStatusSnapshotGetter());
+        }
+        await interaction.reply("🤫 음성 통화 듣기를 일시 중지했습니다. 재개하려면 `/voice resume`을 입력하세요.");
+        return;
+      }
+
+      if (sub === "resume") {
+        if (!interaction.guildId) return;
+        setVoiceChatEnabled(interaction.guildId, true);
+        if (sharedStatusSnapshotGetter) {
+          notifyDashboardStatusChanged(sharedStatusSnapshotGetter());
+        }
+        await interaction.reply("🎙️ 음성 통화를 재개했습니다! 다시 말씀해 보세요.");
+        return;
+      }
+
+      if (sub === "status") {
+        const sessions = getActiveVoiceSessions();
+        const currentSession = interaction.guildId
+          ? sessions.find((s) => s.guildId === interaction.guildId)
+          : null;
+
+        const embed = new EmbedBuilder()
+          .setColor(0x5865f2)
+          .setTitle("🎙️ 음성 통화 상태")
+          .setDescription(
+            currentSession
+              ? `• 접속 채널: **${currentSession.channelName}**\n• 현재 상태: **${currentSession.voiceChatEnabled ? "🟢 활성 (경청 중)" : "⏸️ 일시 정지"}**\n• 재생 모드: \`${currentSession.playbackMode}\`\n• 활성 화자 수: ${currentSession.activeSpeakerCount}명`
+              : "현재 이 서버의 음성 채널에 접속해 있지 않습니다. `/voice join`으로 불러보세요!",
+          );
+        await interaction.reply({ embeds: [embed] });
+        return;
+      }
+    }
+
+    // 4. /preset (목소리)
+    if (commandName === "preset") {
+      const selected = interaction.options.getString("voice");
+      if (!selected) {
+        const current = getCurrentVoicePreset();
+        const listText = Object.values(VOICE_PRESETS)
+          .map((p) => `• **${p.label}** (\`${p.id}\`) — ${p.description}`)
+          .join("\n");
+
+        await interaction.reply({
+          embeds: [
+            new EmbedBuilder()
+              .setColor(0xff85a2)
+              .setTitle("🗣️ MeloTTS 목소리 프리셋 목록")
+              .setDescription(
+                `현재 적용된 목소리: **${current.label}** (\`${current.id}\`)\n\n${listText}`,
+              )
+              .setFooter({ text: "변경: /preset voice:<프리셋명>" }),
+          ],
+        });
+        return;
+      }
+
+      const updated = setVoicePreset(selected);
+      if (!updated) {
+        await interaction.reply({
+          content: `❌ \`${selected}\` 목소리 프리셋을 찾을 수 없습니다.`,
+          ephemeral: true,
+        });
+        return;
+      }
+
+      if (sharedStatusSnapshotGetter) {
+        notifyDashboardStatusChanged(sharedStatusSnapshotGetter());
+      }
+      await interaction.reply({
+        embeds: [
+          new EmbedBuilder()
+            .setColor(0x57f287)
+            .setTitle("🗣️ 목소리 프리셋 변경 완료")
+            .setDescription(
+              `설아의 목소리가 **${updated.label}** (\`${updated.id}\`)(으)로 변경되었습니다!\n*설명:* ${updated.description}`,
+            ),
+        ],
+      });
+      return;
+    }
+
+    // 5. /model (모델)
+    if (commandName === "model") {
+      const sub = interaction.options.getSubcommand();
+
+      if (sub === "list") {
+        await interaction.deferReply();
+        const [available, current] = await Promise.all([
+          getAvailableModels(),
+          getUserModel(userName),
+        ]);
+        await interaction.editReply({
+          embeds: [
+            new EmbedBuilder()
+              .setColor(0x5865f2)
+              .setTitle("🤖 로컬 Ollama 모델 목록")
+              .setDescription(
+                `**${userName}**님의 현재 모델: \`${current}\`\n\n**사용 가능한 모델:**\n${available.map((m) => `• \`${m}\``).join("\n")}`,
+              ),
+          ],
+        });
+        return;
+      }
+
+      if (sub === "status") {
+        const current = await getUserModel(userName);
+        await interaction.reply({
+          content: `🤖 **${userName}**님의 현재 대화 모델은 \`${current}\` 입니다.`,
+        });
+        return;
+      }
+
+      if (sub === "set") {
+        await interaction.deferReply();
+        const target = interaction.options.getString("name", true);
+        const result = await setUserModel(userName, target);
+        if (result.success && result.model) {
+          await interaction.editReply(
+            `🤖 **${userName}**님의 대화 모델이 \`${result.model}\`(으)로 변경되었습니다.`,
+          );
+        } else {
+          await interaction.editReply(
+            `❌ \`${target}\` 모델을 찾을 수 없습니다.\n사용 가능한 모델: ${result.availableModels.map((m) => `\`${m}\``).join(", ")}`,
+          );
+        }
+        return;
+      }
+    }
+
+    // 6. /music (음악)
+    if (commandName === "music") {
+      const sub = interaction.options.getSubcommand();
+
+      if (sub === "list") {
+        const listText = Object.keys(songMap)
+          .map((title) => `• \`${title}\``)
+          .join(", ");
+        await interaction.reply({
+          embeds: [
+            new EmbedBuilder()
+              .setColor(0xff85a2)
+              .setTitle("🎵 재생 가능한 노래 목록")
+              .setDescription(listText)
+              .setFooter({ text: "재생: /music play title:<곡명>" }),
+          ],
+        });
+        return;
+      }
+
+      if (sub === "stop") {
+        if (!interaction.guildId) return;
+        setGuildPlaybackMode(interaction.guildId, "idle");
+        await interaction.reply("⏹️ 음악 재생을 중지했습니다.");
+        return;
+      }
+
+      if (sub === "play") {
+        const title = interaction.options.getString("title", true);
+        const songPath = songMap[title];
+        if (!songPath) {
+          await interaction.reply({
+            content: `❌ \`${title}\` 곡을 찾을 수 없습니다. \`/music list\`를 확인해보세요.`,
+            ephemeral: true,
+          });
+          return;
+        }
+
+        const member = interaction.member as GuildMember;
+        const voiceChannel = member?.voice?.channel as VoiceBasedChannel | null;
+        if (!voiceChannel) {
+          await interaction.reply({
+            content: "❌ 먼저 음성 채널에 입장한 후 음악을 재생해주세요!",
+            ephemeral: true,
+          });
+          return;
+        }
+
+        await interaction.reply(`🎶 **${title}** 곡을 재생합니다!`);
+        // 백그라운드에서 음성 채널 연결 후 음악 재생
+        try {
+          const connection = await connectToVoiceChannel(voiceChannel);
+          if (sharedAudioPlayer) {
+            setupVoiceChatListener({
+              client: interaction.client,
+              connection,
+              voiceChannel,
+              textChannel: interaction.channel?.isSendable() ? interaction.channel : null,
+              player: sharedAudioPlayer,
+            });
+            // 재생 모드 전환
+            setGuildPlaybackMode(voiceChannel.guild.id, "music");
+          }
+        } catch (e: any) {
+          console.error("음악 재생 연결 실패:", e);
+        }
+        return;
+      }
+    }
+
+    // 7. /search (검색)
+    if (commandName === "search") {
+      await interaction.deferReply();
+      const query = interaction.options.getString("query", true);
+      const result = await performWebSearch(query);
+      await interaction.editReply(`🔍 **검색 결과: "${query}"**\n\n${result.slice(0, 1900)}`);
+      return;
+    }
+
+    // 8. /improve (자기개선)
+    if (commandName === "improve") {
+      const sub = interaction.options.getSubcommand();
+
+      if (sub === "status") {
+        await interaction.deferReply();
+        const report = await getSelfImproveStatusReport();
+        await interaction.editReply(`🛠️ **자기개선 에이전트(agy) 상태**\n${report}`);
+        return;
+      }
+
+      if (sub === "run") {
+        await interaction.deferReply();
+        const instruction = interaction.options.getString("instruction", true);
+        const engine = (interaction.options.getString("engine") || "agy") as "agy" | "hermes";
+
+        try {
+          const statusMsg = await runSelfImprovement({
+            instruction,
+            engine,
+            channel: interaction.channel?.isSendable() ? interaction.channel : null,
+          });
+          await interaction.editReply(statusMsg);
+        } catch (err: any) {
+          await interaction.editReply(`❌ 자기개선 실행 오류: ${err.message}`);
+        }
+        return;
+      }
+    }
+
+    // 9. /restart (재시작)
+    if (commandName === "restart") {
+      const reason =
+        interaction.options.getString("reason") ||
+        `${userName}님의 슬래시 명령어 요청`;
+      const msg = scheduleBotRestart(reason);
+      await interaction.reply(`🔄 ${msg}`);
+      return;
+    }
+
+    // 10. /status (상태)
+    if (commandName === "status") {
+      await interaction.deferReply();
+      const report = await getBotStatusReport();
+      await interaction.editReply(`📊 **설아 봇 상태 보고서**\n${report}`);
+      return;
+    }
+
+    // 11. /help (도움말)
+    if (commandName === "help") {
+      const currentPreset = getCurrentVoicePreset();
+      const userPersona = await getUserPersona(userName);
+      const personaDef =
+        PERSONA_DEFINITIONS[userPersona.personaId] || PERSONA_DEFINITIONS.girlfriend;
+
+      const embed = new EmbedBuilder()
+        .setColor(0xff85a2)
+        .setTitle("🌸 설아 봇 (Seola Bot) 슬래시 & 프리픽스 도움말")
+        .setDescription(
+          "로컬 AI(Ollama Gemma4) 기반 텍스트 채팅, 음성 대화, 페르소나 교체, 자율 개선을 지원합니다.",
+        )
+        .addFields(
+          {
+            name: "💬 대화 및 페르소나 설정",
+            value: [
+              "`/chat [message]` 또는 `설아야 <할 말>` — 설아와 텍스트 대화",
+              `\`/persona set\` 또는 \`!persona <이름>\` — 페르소나 변경 (현재: **${personaDef.name}**)`,
+              "페르소나 종류: `girlfriend`(여자친구), `assistant`(비서), `tsundere`(츤데레), `senior`(선배), `cute`(발랄), `custom`(사용자 정의)",
+              "`/persona custom [prompt]` — 나만의 시스템 프롬프트 직접 지정",
+            ].join("\n"),
+          },
+          {
+            name: "🎙️ 실시간 음성 통화 및 목소리",
+            value: [
+              "`/voice join` 또는 `설아야 이리온` — 음성 채널 입장 및 실시간 통화",
+              "`/voice leave` 또는 `설아야 꺼져` — 음성 채널 퇴장",
+              `\`/preset [voice]\` 또는 \`!voice <이름>\` — 목소리 변경 (현재: **${currentPreset.label}**)`,
+              "지원 프리셋: `설아`(`seola`), `발랄`(`lively`), `차분`(`calm`), `속삭임`(`whisper`), `멜로`(`melo`), `아바`(`ava`), `선희`(`sunhi`)",
+            ].join("\n"),
+          },
+          {
+            name: "🛠️ AI 모델 & 에이전트 도구",
+            value: [
+              "`/model set [name]` 또는 `!model <이름>` — 개인 대화 LLM 모델 변경",
+              "`/search [query]` 또는 `!검색 <검색어>` — 실시간 웹/뉴스 검색",
+              "`/improve run [instruction]` 또는 `!자기개선 <내용>` — Antigravity CLI(`agy`) 자율 코드 개선",
+              "`/improve status` 또는 `!작업상태` — 자기개선 진행 상태 확인",
+              "`/restart` / `/status` — 봇 재시작 및 상태 확인",
+            ].join("\n"),
+          },
+          {
+            name: "🎵 음악 재생",
+            value: [
+              "`/music play [title]` 또는 `설아야 <곡명> 틀어줘` — 지정 곡 재생",
+              "`/music stop` — 음악 정지",
+            ].join("\n"),
+          },
+        )
+        .setFooter({ text: "슬래시 명령어(/) 또는 일반 채팅 프리픽스(!) 모두 지원합니다." });
+
+      await interaction.reply({ embeds: [embed] });
+      return;
+    }
+  } catch (error: any) {
+    console.error(`[SlashCommands] /${commandName} 처리 중 오류:`, error);
+    if (interaction.deferred || interaction.replied) {
+      await interaction.editReply({
+        content: `❌ 명령어 처리 중 오류가 발생했습니다: ${error.message}`,
+      });
+    } else {
+      await interaction.reply({
+        content: `❌ 명령어 처리 중 오류가 발생했습니다: ${error.message}`,
+        ephemeral: true,
+      });
+    }
+  }
+};

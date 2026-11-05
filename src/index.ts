@@ -19,7 +19,11 @@ import {
   getAvailableModels,
   getUserKey,
   getUserModel,
+  getUserPersona,
+  PERSONA_DEFINITIONS,
   setUserModel,
+  setUserPersona,
+  type PersonaId,
 } from "./util/helper.ts";
 import { songMap } from "./util/songmap.ts";
 import {
@@ -29,6 +33,11 @@ import {
   runSelfImprovement,
   scheduleBotRestart,
 } from "./util/tools.ts";
+import {
+  handleSlashCommand,
+  registerSlashCommands,
+  setSlashCommandDependencies,
+} from "./util/slashCommands.ts";
 import {
   getActiveVoiceSessions,
   getCurrentVoicePreset,
@@ -96,10 +105,24 @@ const getDashboardStatusSnapshot = (): DashboardStatusSnapshot => {
   };
 };
 
-discordClient.once(Events.ClientReady, (readyClient) => {
+// 슬래시 명령어 핸들러에 오디오 플레이어 및 대시보드 스냅샷 의존성 전달
+setSlashCommandDependencies({
+  player,
+  getDashboardStatusSnapshot,
+});
+
+discordClient.once(Events.ClientReady, async (readyClient) => {
   console.log(`Logged in as ${readyClient.user.tag}`);
   // 봇 시작 시 로컬 Whisper STT 모델을 백그라운드에서 사전 로드
   preloadWhisperModel().catch(() => {});
+  // 디스코드 슬래시(/) 명령어 자동 등록
+  await registerSlashCommands(readyClient);
+});
+
+// 슬래시 명령어(Interaction) 처리
+discordClient.on(Events.InteractionCreate, async (interaction) => {
+  if (!interaction.isChatInputCommand()) return;
+  await handleSlashCommand(interaction);
 });
 
 // 2. 프리픽스 명령어 처리
@@ -121,13 +144,34 @@ discordClient.on("messageCreate", async (message) => {
     /^설아야?\s*(도움말|명령어)/.test(message.content.trim())
   ) {
     const currentPreset = getCurrentVoicePreset();
+    const userPersona = await getUserPersona(getUserKey(message));
+    const personaDef =
+      PERSONA_DEFINITIONS[userPersona.personaId] || PERSONA_DEFINITIONS.girlfriend;
+
     const helpEmbed = new EmbedBuilder()
       .setColor(0xff85a2)
       .setTitle("🌸 설아 봇 (Seola Bot) 명령어 도움말")
       .setDescription(
-        "로컬 AI(Ollama) 기반 텍스트 채팅 및 실시간 음성 대화·음악 재생을 지원하는 설아 봇입니다.",
+        "로컬 AI(Ollama) 기반 텍스트 채팅, 실시간 음성 통화, 다채로운 페르소나, 슬래시(/) 명령어를 지원합니다.",
       )
       .addFields(
+        {
+          name: "⚡ 슬래시(/) 명령어",
+          value: [
+            "`/chat` 대화 | `/persona` 페르소나 변경 | `/voice` 음성통화 제어",
+            "`/preset` 목소리 변경 | `/model` 모델 변경 | `/music` 음악 재생",
+            "`/search` 웹 검색 | `/improve` 자기개선 | `/status` 상태 | `/help` 도움말",
+          ].join("\n"),
+        },
+        {
+          name: `🎭 페르소나(시스템 프롬프트) 설정 (현재: ${personaDef.name})`,
+          value: [
+            "`!persona` 또는 `!페르소나` — 사용 가능한 페르소나 목록 확인",
+            "`!persona <이름>` 또는 `설아야 페르소나 <이름>` — 페르소나 변경",
+            "`!persona custom <프롬프트>` — 원하는 시스템 프롬프트 직접 등록",
+            "지원 페르소나: `girlfriend`(여자친구), `assistant`(비서), `tsundere`(츤데레), `senior`(선배), `cute`(발랄), `custom`(사용자지정)",
+          ].join("\n"),
+        },
         {
           name: "💬 AI 텍스트 대화",
           value: [
@@ -141,7 +185,7 @@ discordClient.on("messageCreate", async (message) => {
             "*(1:1 통화 시에는 호출어 없이 바로 대답하며, 사람이 여러 명일 때는 `설아야`라고 부르며 질문한 경우에만 대답합니다. 음성 대화록은 대시보드에 실시간 기록됩니다)*",
             `\`!dashboard\` / \`!대시보드\` — 실시간 음성 대화록 웹 대시보드 주소 확인 (${dashboardUrl})`,
             "`설아야 조용히 해` / `설아야 음성대화 꺼줘` — 음성 듣기 일시 중지",
-            "`설아야 다시 말해` / `설아야 음성대화 켜줘` — 음성 듣기 재개",
+            "`설아야 다시 말해` / `설아야 음성대화 꺼줘` — 음성 듣기 재개",
             "`설아야 꺼져` — 음성 채널 퇴장 *(음성으로 말해도 퇴장 가능)*",
           ].join("\n"),
         },
@@ -178,9 +222,67 @@ discordClient.on("messageCreate", async (message) => {
           ].join("\n"),
         },
       )
-      .setFooter({ text: "도움말 다시 보기: !help 또는 !도움말" });
+      .setFooter({ text: "도움말 다시 보기: !help 또는 !도움말 또는 /help" });
 
     await message.reply({ embeds: [helpEmbed] });
+    return;
+  }
+
+  // 페르소나 명령어 (!persona, !페르소나)
+  if (
+    message.content.startsWith("!persona") ||
+    message.content.startsWith("!페르소나")
+  ) {
+    const rawArgs = message.content
+      .replace(/^(!persona|!페르소나)\s*/i, "")
+      .trim();
+    const userName = getUserKey(message);
+
+    if (!rawArgs) {
+      const current = await getUserPersona(userName);
+      const def =
+        PERSONA_DEFINITIONS[current.personaId] || PERSONA_DEFINITIONS.girlfriend;
+      const listText = Object.values(PERSONA_DEFINITIONS)
+        .map((p) => `• **${p.name}** (\`${p.id}\`): ${p.tagline}`)
+        .join("\n");
+
+      await message.reply(
+        `🎭 **${userName}님의 현재 페르소나: ${def.name}**\n\n**사용 가능한 페르소나 목록:**\n${listText}\n\n변경 방법: \`!persona <이름>\` (예: \`!persona 비서\` 또는 \`!persona girlfriend\`)\n커스텀 프롬프트 지정: \`!persona custom <프롬프트내용>\``,
+      );
+      return;
+    }
+
+    if (rawArgs.toLowerCase().startsWith("custom ") || rawArgs.startsWith("커스텀 ")) {
+      const customPrompt = rawArgs.replace(/^(custom|커스텀)\s+/i, "").trim();
+      if (!customPrompt) {
+        await message.reply("커스텀 시스템 프롬프트를 함께 입력해주세요. (예: `!persona custom 너는 명탐정 코난이야...`)");
+        return;
+      }
+      await setUserPersona(userName, "custom", customPrompt);
+      await message.reply(`🎭 **${userName}**님의 커스텀 시스템 프롬프트가 성공적으로 등록되었습니다!`);
+      return;
+    }
+
+    const target = rawArgs.toLowerCase().replace(/(으로|로)$/, "");
+    let matchedId: PersonaId | null = null;
+    if (["여자친구", "여친", "girlfriend"].includes(target)) matchedId = "girlfriend";
+    else if (["비서", "비서관", "assistant"].includes(target)) matchedId = "assistant";
+    else if (["츤데레", "소꿉친구", "tsundere"].includes(target)) matchedId = "tsundere";
+    else if (["선배", "멘토", "senior"].includes(target)) matchedId = "senior";
+    else if (["귀여운", "발랄", "cute"].includes(target)) matchedId = "cute";
+    else if (["커스텀", "custom"].includes(target)) matchedId = "custom";
+
+    if (!matchedId) {
+      await message.reply(
+        `❌ \`${rawArgs}\` 페르소나를 찾을 수 없습니다.\n지원 페르소나: \`girlfriend\`(여자친구), \`assistant\`(비서), \`tsundere\`(츤데레), \`senior\`(선배), \`cute\`(발랄), \`custom\`(커스텀)`,
+      );
+      return;
+    }
+
+    const result = await setUserPersona(userName, matchedId);
+    await message.reply(
+      `🎭 **${userName}**님의 페르소나가 **${result.persona.name}**(으)로 변경되었습니다!\n*특징:* ${result.persona.tagline}`,
+    );
     return;
   }
 

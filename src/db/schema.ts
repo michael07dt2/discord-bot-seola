@@ -28,6 +28,16 @@ export const userModelsTable = pgTable("user_models", {
   model: varchar({ length: 255 }).notNull(),
 });
 
+// 사용자별 선택된 시스템 프롬프트(페르소나)를 저장하는 테이블
+export const userPersonasTable = pgTable("user_personas", {
+  name: varchar({ length: 255 }).primaryKey(),
+  personaId: varchar("persona_id", { length: 64 }).default("girlfriend").notNull(),
+  customPrompt: text("custom_prompt"),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .defaultNow()
+    .notNull(),
+});
+
 // 음성 채널 대화록(STT/TTS 로그)을 대시보드 전용으로 저장하는 테이블
 export const voiceLogsTable = pgTable("voice_logs", {
   id: integer().primaryKey().generatedAlwaysAsIdentity(),
