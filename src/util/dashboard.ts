@@ -1,7 +1,28 @@
-import type { Express, Request, Response } from "express";
+import express, { type Express, type Request, type Response } from "express";
 import { drizzle } from "drizzle-orm/node-postgres";
-import { desc, sql } from "drizzle-orm";
-import { voiceLogsTable } from "../db/schema.ts";
+import { desc, eq, sql } from "drizzle-orm";
+import { contextsTable, voiceLogsTable } from "../db/schema.ts";
+import {
+  getUserPersona,
+  PERSONA_DEFINITIONS,
+  setUserPersona,
+  type PersonaId,
+} from "./persona.ts";
+import {
+  getActiveVoiceSessions,
+  getCurrentVoicePreset,
+  leaveVoiceChannel,
+  setGuildPlaybackMode,
+  setVoiceChatEnabled,
+  setVoicePreset,
+  VOICE_PRESETS,
+} from "./voiceChat.ts";
+import { songMap } from "./songmap.ts";
+import {
+  deleteUserMemory,
+  listUserMemories,
+  saveUserMemory,
+} from "./memoryRag.ts";
 import "dotenv/config";
 
 const db = drizzle(
@@ -87,8 +108,7 @@ const broadcastSseEvent = (event: string, payload: unknown): void => {
 };
 
 /**
- * 음성 대화록(STT 인식 결과 및 설아 응답)을 DB 및 메모리에 기록하고
- * 열려 있는 모든 대시보드 화면에 실시간(SSE)으로 브로드캐스트합니다.
+ * 음성 대화록을 DB 및 메모리에 기록하고 SSE로 브로드캐스트
  */
 export const recordVoiceTranscript = async (params: {
   guildName: string;
@@ -99,63 +119,71 @@ export const recordVoiceTranscript = async (params: {
   actionType?: VoiceActionType;
   durationSec?: number;
 }): Promise<VoiceLogEntry> => {
-  const now = new Date();
-  const actionType: VoiceActionType = params.actionType ?? "chat";
-  const durationStr =
-    params.durationSec !== undefined ? params.durationSec.toFixed(1) : null;
+  const {
+    guildName,
+    channelName,
+    userName,
+    userText,
+    botReply,
+    actionType = "chat",
+    durationSec,
+  } = params;
 
-  let savedEntry: VoiceLogEntry = {
-    id: fallbackIdCounter++,
-    guildName: params.guildName,
-    channelName: params.channelName,
-    userName: params.userName,
-    userText: params.userText,
-    botReply: params.botReply,
-    actionType,
-    durationSec: durationStr,
-    createdAt: now.toISOString(),
-  };
+  const durationStr =
+    typeof durationSec === "number" && durationSec > 0
+      ? `${durationSec.toFixed(1)}s`
+      : null;
+
+  let savedEntry: VoiceLogEntry;
 
   try {
     await ensureVoiceLogsTable();
-    const inserted = await db
+    const rows = await db
       .insert(voiceLogsTable)
       .values({
-        guildName: params.guildName,
-        channelName: params.channelName,
-        userName: params.userName,
-        userText: params.userText,
-        botReply: params.botReply,
+        guildName,
+        channelName,
+        userName,
+        userText,
+        botReply,
         actionType,
         durationSec: durationStr,
-        createdAt: now,
       })
-      .returning();
+      .returning({
+        id: voiceLogsTable.id,
+        createdAt: voiceLogsTable.createdAt,
+      });
 
-    const row = inserted[0];
-    if (row) {
-      savedEntry = {
-        id: row.id,
-        guildName: row.guildName,
-        channelName: row.channelName,
-        userName: row.userName,
-        userText: row.userText,
-        botReply: row.botReply,
-        actionType: (row.actionType as VoiceActionType) || "chat",
-        durationSec: row.durationSec,
-        createdAt:
-          row.createdAt instanceof Date
-            ? row.createdAt.toISOString()
-            : new Date(row.createdAt).toISOString(),
-      };
-    }
+    const inserted = rows[0];
+    savedEntry = {
+      id: inserted ? inserted.id : fallbackIdCounter++,
+      guildName,
+      channelName,
+      userName,
+      userText,
+      botReply,
+      actionType,
+      durationSec: durationStr,
+      createdAt: inserted ? inserted.createdAt.toISOString() : new Date().toISOString(),
+    };
   } catch (error) {
-    console.error("[Dashboard] 음성 대화록 DB 저장 실패 (메모리 캐시 유지):", error);
+    console.warn("[Dashboard] 음성 대화록 DB 저장 실패, 메모리 폴백 사용:", error);
+    savedEntry = {
+      id: fallbackIdCounter++,
+      guildName,
+      channelName,
+      userName,
+      userText,
+      botReply,
+      actionType,
+      durationSec: durationStr,
+      createdAt: new Date().toISOString(),
+    };
   }
 
   memoryLogs.push(savedEntry);
   if (memoryLogs.length > MAX_MEMORY_LOGS) {
-    memoryLogs.splice(0, memoryLogs.length - MAX_MEMORY_LOGS);
+    memoryLogs.shift();
   }
 
   broadcastSseEvent("voice_log", savedEntry);
@@ -163,7 +191,7 @@ export const recordVoiceTranscript = async (params: {
 };
 
 /**
- * 저장된 음성 대화록 목록을 조회합니다.
+ * 저장된 음성 대화록 목록 조회
  */
 export const getVoiceTranscripts = async (
   limit = 200,
@@ -210,6 +238,26 @@ export const getVoiceTranscripts = async (
 };
 
 /**
+ * 단일 음성 대화록 삭제
+ */
+export const deleteVoiceTranscript = async (id: number): Promise<boolean> => {
+  try {
+    await ensureVoiceLogsTable();
+    await db.delete(voiceLogsTable).where(eq(voiceLogsTable.id, id));
+  } catch (error) {
+    console.warn("[Dashboard] 음성 대화록 DB 단일 삭제 실패:", error);
+  }
+
+  const idx = memoryLogs.findIndex((m) => m.id === id);
+  if (idx !== -1) {
+    memoryLogs.splice(idx, 1);
+  }
+
+  broadcastSseEvent("delete_log", { id });
+  return true;
+};
+
+/**
  * 음성 대화록 전체 삭제
  */
 export const clearVoiceTranscripts = async (): Promise<void> => {
@@ -240,302 +288,229 @@ const renderDashboardHtml = (): string => `<!DOCTYPE html>
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>설아(Seola) 실시간 음성 대화록 대시보드</title>
+  <title>설아(Seola) 실시간 음성 대화록 & 원격 제어 대시보드</title>
   <style>
     :root {
-      --bg-primary: #0f1117;
-      --bg-secondary: #171a24;
-      --bg-card: #1e2230;
-      --bg-user: #252b3d;
-      --bg-bot: #2b1d28;
-      --border: #2e3448;
+      --bg-primary: #0b0d13;
+      --bg-secondary: #131722;
+      --bg-card: #1a1f2e;
+      --bg-user: #22293d;
+      --bg-bot: #2c1d2c;
+      --border: #293044;
       --accent: #ff7597;
-      --accent-soft: rgba(255, 117, 151, 0.14);
-      --text-primary: #f1f5f9;
+      --accent-soft: rgba(255, 117, 151, 0.16);
+      --text-primary: #f8fafc;
       --text-secondary: #94a3b8;
       --text-muted: #64748b;
       --green: #34d399;
       --amber: #fbbf24;
       --blue: #60a5fa;
       --danger: #f87171;
+      --purple: #c084fc;
     }
-    * {
-      box-sizing: border-box;
-      margin: 0;
-      padding: 0;
-    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
-      font-family: -apple-system, BlinkMacSystemFont, "Pretendard", "Segoe UI", Roboto, sans-serif;
-      background-color: var(--bg-primary);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Pretendard", sans-serif;
+      background: var(--bg-primary);
       color: var(--text-primary);
       min-height: 100vh;
       display: flex;
       flex-direction: column;
     }
+
     header {
-      background: rgba(23, 26, 36, 0.9);
-      backdrop-filter: blur(12px);
+      background: var(--bg-secondary);
       border-bottom: 1px solid var(--border);
-      padding: 16px 24px;
+      padding: 14px 24px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
       position: sticky;
       top: 0;
-      z-index: 10;
-      display: flex;
-      flex-wrap: wrap;
-      align-items: center;
-      justify-content: space-between;
-      gap: 14px;
+      z-index: 50;
+      backdrop-filter: blur(10px);
     }
-    .brand {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-    }
+
+    .brand { display: flex; align-items: center; gap: 12px; }
     .brand-icon {
-      width: 40px;
-      height: 40px;
-      border-radius: 12px;
-      background: linear-gradient(135deg, #ff7597, #ff4d79);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 20px;
-      box-shadow: 0 4px 14px rgba(255, 117, 151, 0.3);
+      width: 40px; height: 40px; border-radius: 12px;
+      background: linear-gradient(135deg, #ff7597 0%, #ff4b72 100%);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 20px; box-shadow: 0 4px 14px rgba(255, 117, 151, 0.35);
     }
-    .brand-title h1 {
-      font-size: 18px;
-      font-weight: 700;
-      letter-spacing: -0.02em;
-    }
-    .brand-title p {
-      font-size: 12px;
-      color: var(--text-secondary);
-      margin-top: 2px;
-    }
-    .status-pills {
-      display: flex;
-      flex-wrap: wrap;
-      align-items: center;
-      gap: 8px;
-    }
-    .pill {
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      padding: 6px 12px;
-      border-radius: 999px;
-      font-size: 12px;
-      font-weight: 600;
-      background: var(--bg-card);
-      border: 1px solid var(--border);
+    .brand h1 { font-size: 18px; font-weight: 700; letter-spacing: -0.3px; }
+    .brand p { font-size: 12px; color: var(--text-muted); }
+
+    .header-status { display: flex; align-items: center; gap: 16px; font-size: 13px; }
+    .status-pill {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 6px 12px; border-radius: 20px;
+      background: var(--bg-card); border: 1px solid var(--border);
       color: var(--text-secondary);
     }
-    .dot {
-      width: 8px;
-      height: 8px;
-      border-radius: 50%;
-      background: var(--text-muted);
-    }
-    .dot.live {
-      background: var(--green);
-      box-shadow: 0 0 8px var(--green);
-    }
-    .dot.warn {
-      background: var(--amber);
-    }
+    .dot { width: 8px; height: 8px; border-radius: 50%; }
+    .dot.live { background: var(--green); box-shadow: 0 0 8px var(--green); animation: pulse 2s infinite; }
+    .dot.warn { background: var(--amber); }
+
+    @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.4; } 100% { opacity: 1; } }
+
     main {
-      max-width: 1120px;
-      width: 100%;
-      margin: 0 auto;
-      padding: 20px 24px 40px;
-      flex: 1;
-      display: flex;
-      flex-direction: column;
-      gap: 18px;
+      flex: 1; max-width: 1440px; width: 100%; margin: 0 auto;
+      padding: 20px 24px 40px; display: flex; flex-direction: column; gap: 20px;
     }
-    .session-banner {
-      background: var(--bg-secondary);
-      border: 1px solid var(--border);
-      border-radius: 14px;
-      padding: 14px 18px;
-      display: flex;
-      flex-wrap: wrap;
-      align-items: center;
-      justify-content: space-between;
-      gap: 12px;
-    }
-    .session-list {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 10px;
-      align-items: center;
-    }
-    .session-chip {
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-      padding: 6px 12px;
-      border-radius: 10px;
-      background: var(--accent-soft);
-      border: 1px solid rgba(255, 117, 151, 0.35);
-      font-size: 13px;
-      color: #ffdce5;
-    }
-    .toolbar {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 10px;
-      align-items: center;
-      justify-content: space-between;
-    }
-    .filters {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 8px;
-      flex: 1;
-    }
-    input[type="search"], select {
-      background: var(--bg-secondary);
-      border: 1px solid var(--border);
-      color: var(--text-primary);
-      padding: 9px 13px;
-      border-radius: 10px;
-      font-size: 13px;
-      outline: none;
-    }
-    input[type="search"] {
-      min-width: 240px;
-      flex: 1;
-      max-width: 380px;
-    }
-    input[type="search"]:focus, select:focus {
-      border-color: var(--accent);
-    }
-    .actions {
-      display: flex;
-      gap: 8px;
-      align-items: center;
-    }
-    button {
-      background: var(--bg-card);
-      border: 1px solid var(--border);
-      color: var(--text-primary);
-      padding: 8px 13px;
-      border-radius: 10px;
-      font-size: 12px;
-      font-weight: 600;
-      cursor: pointer;
-      transition: all 0.15s ease;
-    }
-    button:hover {
-      border-color: var(--accent);
-      background: var(--bg-user);
-    }
-    button.danger:hover {
-      border-color: var(--danger);
-      color: var(--danger);
-    }
-    .log-container {
+
+    /* 상단 컨트롤 패널 */
+    .control-panel {
       background: var(--bg-secondary);
       border: 1px solid var(--border);
       border-radius: 16px;
-      padding: 18px;
-      min-height: 480px;
-      max-height: calc(100vh - 260px);
-      overflow-y: auto;
+      padding: 18px 22px;
       display: flex;
       flex-direction: column;
-      gap: 14px;
+      gap: 16px;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.25);
     }
-    .empty-state {
-      margin: auto;
-      text-align: center;
-      color: var(--text-muted);
-      padding: 60px 20px;
+    .panel-header {
+      display: flex; justify-content: space-between; align-items: center;
+      font-size: 15px; font-weight: 700; color: var(--text-primary);
     }
-    .empty-state .icon {
-      font-size: 38px;
-      margin-bottom: 10px;
+    .panel-header span { color: var(--accent); }
+
+    .control-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 16px;
     }
-    .log-item {
+    .control-card {
       background: var(--bg-card);
       border: 1px solid var(--border);
-      border-radius: 14px;
+      border-radius: 12px;
       padding: 14px 16px;
       display: flex;
       flex-direction: column;
       gap: 10px;
-      animation: fadeIn 0.2s ease-out;
     }
-    @keyframes fadeIn {
-      from { opacity: 0; transform: translateY(4px); }
-      to { opacity: 1; transform: translateY(0); }
+    .control-card label {
+      font-size: 12px; font-weight: 600; color: var(--text-secondary);
+      text-transform: uppercase; letter-spacing: 0.5px;
     }
-    .log-meta {
-      display: flex;
+    .control-row {
+      display: flex; gap: 8px; align-items: center;
+    }
+    select, input[type="text"] {
+      flex: 1; background: var(--bg-user); border: 1px solid var(--border);
+      color: var(--text-primary); padding: 8px 12px; border-radius: 8px;
+      font-size: 13px; outline: none; transition: border-color 0.15s;
+    }
+    select:focus, input[type="text"]:focus { border-color: var(--accent); }
+
+    .btn {
+      padding: 8px 14px; border-radius: 8px; font-size: 13px; font-weight: 600;
+      border: none; cursor: pointer; display: inline-flex; align-items: center; gap: 6px;
+      transition: all 0.15s ease;
+    }
+    .btn-primary { background: var(--accent); color: white; }
+    .btn-primary:hover { opacity: 0.9; transform: translateY(-1px); }
+    .btn-secondary { background: var(--bg-user); color: var(--text-primary); border: 1px solid var(--border); }
+    .btn-secondary:hover { background: var(--border); }
+    .btn-danger { background: rgba(248, 113, 113, 0.15); color: var(--danger); border: 1px solid rgba(248, 113, 113, 0.3); }
+    .btn-danger:hover { background: var(--danger); color: white; }
+    .btn-sm { padding: 4px 8px; font-size: 11px; border-radius: 6px; }
+
+    /* 상태 지표 카드 */
+    .metrics-row {
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 14px;
+    }
+    .metric-card {
+      background: var(--bg-secondary); border: 1px solid var(--border);
+      border-radius: 12px; padding: 14px 18px; display: flex; flex-direction: column; gap: 4px;
+    }
+    .metric-card .title { font-size: 12px; color: var(--text-muted); }
+    .metric-card .val { font-size: 20px; font-weight: 700; color: var(--text-primary); }
+
+    /* 대화록 및 메모리 탭 영역 */
+    .content-section {
+      background: var(--bg-secondary); border: 1px solid var(--border);
+      border-radius: 16px; overflow: hidden; display: flex; flex-direction: column; flex: 1;
+    }
+    .tab-bar {
+      display: flex; gap: 4px; padding: 10px 18px; border-bottom: 1px solid var(--border);
+      background: rgba(0,0,0,0.15);
+    }
+    .tab-btn {
+      background: none; border: none; color: var(--text-secondary);
+      font-size: 14px; font-weight: 600; padding: 8px 16px; border-radius: 8px;
+      cursor: pointer; transition: all 0.15s;
+    }
+    .tab-btn.active { background: var(--bg-card); color: var(--accent); }
+
+    .toolbar {
+      padding: 12px 18px; display: flex; gap: 12px; align-items: center;
+      border-bottom: 1px solid var(--border); background: var(--bg-secondary);
       flex-wrap: wrap;
-      align-items: center;
-      justify-content: space-between;
-      gap: 8px;
-      font-size: 12px;
-      color: var(--text-secondary);
     }
-    .meta-left {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      flex-wrap: wrap;
+    .search-box {
+      flex: 1; min-width: 260px; position: relative;
     }
-    .user-badge {
-      font-weight: 700;
-      color: var(--blue);
-      background: rgba(96, 165, 250, 0.12);
-      padding: 3px 9px;
-      border-radius: 6px;
+    .search-box input {
+      width: 100%; padding-left: 36px;
     }
-    .channel-badge {
-      color: var(--text-secondary);
-      background: rgba(148, 163, 184, 0.12);
-      padding: 3px 8px;
-      border-radius: 6px;
+    .search-icon {
+      position: absolute; left: 12px; top: 50%; transform: translateY(-50%);
+      color: var(--text-muted); font-size: 14px;
     }
-    .type-badge {
-      font-size: 11px;
-      padding: 2px 8px;
-      border-radius: 6px;
-      font-weight: 600;
+
+    /* 로그 리스트 */
+    .logs-container {
+      flex: 1; overflow-y: auto; padding: 18px; display: flex; flex-direction: column; gap: 14px;
+      max-height: 600px;
     }
-    .type-chat { background: rgba(52, 211, 153, 0.14); color: var(--green); }
-    .type-music_play { background: rgba(251, 191, 36, 0.15); color: var(--amber); }
-    .type-music_stop { background: rgba(248, 113, 113, 0.15); color: var(--danger); }
-    .type-leave { background: rgba(148, 163, 184, 0.2); color: var(--text-secondary); }
-    .turn-row {
-      display: flex;
-      align-items: flex-start;
-      gap: 10px;
-      line-height: 1.5;
-      font-size: 14px;
-      padding: 9px 12px;
-      border-radius: 10px;
+    .log-card {
+      background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px;
+      padding: 14px 16px; display: flex; flex-direction: column; gap: 10px;
+      transition: border-color 0.15s;
     }
-    .turn-user {
-      background: var(--bg-user);
+    .log-card:hover { border-color: rgba(255, 117, 151, 0.4); }
+    .log-header {
+      display: flex; justify-content: space-between; align-items: center; font-size: 12px;
+      color: var(--text-muted);
     }
-    .turn-bot {
-      background: var(--bg-bot);
-      border: 1px solid rgba(255, 117, 151, 0.2);
+    .log-meta { display: flex; gap: 8px; align-items: center; }
+    .badge {
+      padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 600;
     }
-    .turn-label {
-      font-weight: 700;
-      white-space: nowrap;
-      font-size: 13px;
+    .badge-chat { background: rgba(96, 165, 250, 0.15); color: var(--blue); }
+    .badge-music { background: rgba(192, 132, 252, 0.15); color: var(--purple); }
+
+    .speech-bubble {
+      padding: 10px 14px; border-radius: 10px; font-size: 14px; line-height: 1.5;
     }
-    .turn-user .turn-label { color: #93c5fd; }
-    .turn-bot .turn-label { color: var(--accent); }
-    .turn-text {
-      word-break: break-word;
-      white-space: pre-wrap;
-      flex: 1;
+    .user-bubble {
+      background: var(--bg-user); border-left: 3px solid var(--blue);
+      color: var(--text-primary);
+    }
+    .bot-bubble {
+      background: var(--bg-bot); border-left: 3px solid var(--accent);
+      color: var(--text-primary);
+    }
+
+    /* 장기 기억(RAG) 탭 */
+    .memory-tab-content { display: none; padding: 18px; flex-direction: column; gap: 16px; }
+    .memory-tab-content.active { display: flex; }
+    .memory-form {
+      display: grid; grid-template-columns: 140px 1fr 100px 90px; gap: 10px;
+      background: var(--bg-card); padding: 14px; border-radius: 12px; border: 1px solid var(--border);
+    }
+    .memories-grid {
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 12px;
+    }
+    .memory-card {
+      background: var(--bg-card); border: 1px solid var(--border); border-radius: 10px;
+      padding: 12px 14px; display: flex; flex-direction: column; gap: 8px;
+    }
+    .memory-card-header {
+      display: flex; justify-content: space-between; font-size: 11px; color: var(--text-muted);
     }
   </style>
 </head>
@@ -543,207 +518,499 @@ const renderDashboardHtml = (): string => `<!DOCTYPE html>
   <header>
     <div class="brand">
       <div class="brand-icon">🌸</div>
-      <div class="brand-title">
-        <h1>설아(Seola) 실시간 음성 대화록 대시보드</h1>
-        <p>디스코드 채팅 채널에 전송되지 않는 음성(STT/TTS) 전용 실시간 대화 기록</p>
+      <div>
+        <h1>Seola Bot Dashboard & Remote</h1>
+        <p>로컬 Ollama · MeloTTS-Korean 44.1kHz · Whisper STT · Memory RAG</p>
       </div>
     </div>
-    <div class="status-pills">
-      <div class="pill">
-        <span id="sseDot" class="dot"></span>
-        <span id="sseStatusText">실시간 연결 중...</span>
+    <div class="header-status">
+      <div class="status-pill">
+        <span class="dot live" id="sseDot"></span>
+        <span id="sseStatus">실시간 연결 중</span>
       </div>
-      <div class="pill" id="voicePresetPill">🗣️ 목소리: -</div>
-      <div class="pill" id="countPill">기록 0건</div>
+      <div class="status-pill" id="botTagPill">
+        <span>🤖 봇 로딩 중...</span>
+      </div>
     </div>
   </header>
 
   <main>
-    <section class="session-banner">
-      <div class="session-list" id="sessionList">
-        <span style="color: var(--text-secondary); font-size: 13px;">현재 활성화된 음성 채널 세션이 없습니다. (디스코드에서 <code>설아야 이리온</code> 입력 시 연결)</span>
+    <!-- 🎛️ 상단 원격 제어 센터 -->
+    <div class="control-panel">
+      <div class="panel-header">
+        <div>🎛️ <span>실시간 원격 제어 센터</span> (Live Control Center)</div>
+        <div style="font-size: 12px; color: var(--text-muted);">웹에서 실시간으로 봇 성격·목소리·음성을 제어합니다.</div>
       </div>
-    </section>
+      <div class="control-grid">
+        <!-- 페르소나 설정 -->
+        <div class="control-card">
+          <label>🎭 페르소나 (성격 및 프롬프트)</label>
+          <div class="control-row">
+            <select id="personaSelect">
+              <option value="girlfriend">설아 (다정한 동갑내기 여친)</option>
+              <option value="assistant">설아 비서 (스마트한 AI 비서)</option>
+              <option value="tsundere">츤데레 설아 (소꿉친구)</option>
+              <option value="senior">설아 선배 (듬직한 멘토)</option>
+              <option value="cute">발랄한 설아 (귀여운 마스코트)</option>
+              <option value="custom">사용자 정의 (Custom)</option>
+            </select>
+            <button class="btn btn-primary" id="applyPersonaBtn">적용</button>
+          </div>
+        </div>
 
-    <section class="toolbar">
-      <div class="filters">
-        <input type="search" id="searchInput" placeholder="대화 내용 또는 사용자 이름 검색..." />
-        <select id="userFilter">
-          <option value="">전체 사용자</option>
-        </select>
-      </div>
-      <div class="actions">
-        <label style="font-size: 12px; color: var(--text-secondary); display: flex; align-items: center; gap: 5px; cursor: pointer;">
-          <input type="checkbox" id="autoScrollToggle" checked /> 자동 스크롤
-        </label>
-        <button id="refreshBtn" type="button">새로고침</button>
-        <button id="clearBtn" class="danger" type="button">대화록 비우기</button>
-      </div>
-    </section>
+        <!-- 목소리(MeloTTS) 설정 -->
+        <div class="control-card">
+          <label>🗣️ 목소리 프리셋 (MeloTTS-Korean)</label>
+          <div class="control-row">
+            <select id="presetSelect">
+              <option value="seola">🌸 설아 (시그니처 기본톤)</option>
+              <option value="lively">✨ 발랄 (톤 업, 귀엽고 밝은 어투)</option>
+              <option value="calm">☕ 차분 (성숙하고 따뜻한 중저음)</option>
+              <option value="whisper">🌙 속삭임 (나직하고 포근한 톤)</option>
+              <option value="melo">🎙️ 멜로 (중립 원음 기준)</option>
+              <option value="ava">💎 아바 (Edge 다국어 음성)</option>
+              <option value="sunhi">🎀 선희 (Edge 한국어 음성)</option>
+            </select>
+            <button class="btn btn-primary" id="applyPresetBtn">변경</button>
+          </div>
+        </div>
 
-    <section class="log-container" id="logContainer">
-      <div class="empty-state" id="emptyState">
-        <div class="icon">🎙️</div>
-        <p>아직 기록된 음성 대화가 없습니다.</p>
-        <p style="font-size: 12px; margin-top: 6px;">음성 채널에서 설아와 대화하면 이곳에 실시간으로 표시됩니다.</p>
+        <!-- 음성 채널 제어 -->
+        <div class="control-card">
+          <label>🎙️ 음성 채널 상태 및 제어</label>
+          <div class="control-row">
+            <button class="btn btn-secondary" id="pauseVoiceBtn">⏸️ 듣기 일시정지</button>
+            <button class="btn btn-secondary" id="resumeVoiceBtn">▶️ 듣기 재개</button>
+            <button class="btn btn-danger" id="leaveVoiceBtn">👋 채널 퇴장</button>
+          </div>
+        </div>
+
+        <!-- 음악 재생 제어 -->
+        <div class="control-card">
+          <label>🎵 음악 재생 제어</label>
+          <div class="control-row">
+            <select id="songSelect">
+              <option value="아리아">아리아 (Aria)</option>
+              <option value="어웨이크">어웨이크 (Awake)</option>
+              <option value="브레이크 더 체인">브레이크 더 체인</option>
+              <option value="크레이지">크레이지 (Crazy)</option>
+              <option value="리다인">리다인 (Redine)</option>
+              <option value="노 머시">노 머시 (No Mercy)</option>
+              <option value="세컨드 라이트">세컨드 라이트</option>
+              <option value="댓 걸">댓 걸 (That Girl)</option>
+              <option value="바토리">바토리 (Bathory)</option>
+              <option value="미래소녀">미래소녀 (Future Girl)</option>
+            </select>
+            <button class="btn btn-primary" id="playMusicBtn">재생</button>
+            <button class="btn btn-secondary" id="stopMusicBtn">정지</button>
+          </div>
+        </div>
       </div>
-    </section>
+    </div>
+
+    <!-- 상태 메트릭 -->
+    <div class="metrics-row">
+      <div class="metric-card">
+        <span class="title">가동 시간 (Uptime)</span>
+        <span class="val" id="uptimeVal">0초</span>
+      </div>
+      <div class="metric-card">
+        <span class="title">메모리 사용량 (RSS)</span>
+        <span class="val" id="memoryVal">0 MB</span>
+      </div>
+      <div class="metric-card">
+        <span class="title">현재 TTS 목소리</span>
+        <span class="val" id="presetVal" style="font-size: 16px; color: var(--accent);">-</span>
+      </div>
+      <div class="metric-card">
+        <span class="title">활성 음성 채널 수</span>
+        <span class="val" id="sessionsVal">0개</span>
+      </div>
+    </div>
+
+    <!-- 대화록 및 장기 기억 관리 탭 -->
+    <div class="content-section">
+      <div class="tab-bar">
+        <button class="tab-btn active" id="tabLogsBtn">💬 실시간 음성 대화록</button>
+        <button class="tab-btn" id="tabMemoryBtn">🧠 개인화 장기 기억 (RAG Memory)</button>
+      </div>
+
+      <!-- 1. 대화록 탭 -->
+      <div id="logsTabPane" style="display: flex; flex-direction: column; flex: 1;">
+        <div class="toolbar">
+          <div class="search-box">
+            <span class="search-icon">🔍</span>
+            <input type="text" id="searchInput" placeholder="대화 내용, 사용자 이름, 답변 실시간 검색..." />
+          </div>
+          <select id="userFilter" style="max-width: 160px;">
+            <option value="">모든 사용자</option>
+          </select>
+          <button class="btn btn-secondary" id="refreshBtn">🔄 새로고침</button>
+          <button class="btn btn-danger" id="clearAllBtn">🗑️ 전체 비우기</button>
+        </div>
+
+        <div class="logs-container" id="logsContainer">
+          <div style="text-align: center; color: var(--text-muted); padding: 40px;">대화록을 불러오는 중...</div>
+        </div>
+      </div>
+
+      <!-- 2. 장기 기억(RAG) 탭 -->
+      <div id="memoryTabPane" class="memory-tab-content">
+        <div style="font-size: 13px; color: var(--text-secondary);">
+          설아가 사용자와의 대화에서 자동으로 학습하거나 수동으로 등록된 <strong>장기 기억(Long-term Memory)</strong> 목록입니다.
+          대화 시 벡터 검색을 통해 관련 높은 사실이 프롬프트에 자동 소환됩니다.
+        </div>
+        <form class="memory-form" id="addMemoryForm">
+          <input type="text" id="memUser" placeholder="사용자 이름" required value="micha" />
+          <input type="text" id="memText" placeholder="기억할 내용 (예: 매운 떡볶이를 좋아함, 생일은 5월 12일)" required />
+          <select id="memCategory">
+            <option value="preference">취향/선호</option>
+            <option value="hobby">취미</option>
+            <option value="birthday">생일/기념일</option>
+            <option value="job">직업/학업</option>
+            <option value="general">일반</option>
+          </select>
+          <button class="btn btn-primary" type="submit">기억 추가</button>
+        </form>
+
+        <div class="memories-grid" id="memoriesGrid">
+          <div style="color: var(--text-muted);">등록된 기억을 불러오는 중...</div>
+        </div>
+      </div>
+    </div>
   </main>
 
   <script>
     let allLogs = [];
-    const logContainer = document.getElementById("logContainer");
+    let activeSessions = [];
+
+    const logsContainer = document.getElementById("logsContainer");
     const searchInput = document.getElementById("searchInput");
     const userFilter = document.getElementById("userFilter");
-    const countPill = document.getElementById("countPill");
-    const voicePresetPill = document.getElementById("voicePresetPill");
-    const sessionList = document.getElementById("sessionList");
     const sseDot = document.getElementById("sseDot");
-    const sseStatusText = document.getElementById("sseStatusText");
-    const autoScrollToggle = document.getElementById("autoScrollToggle");
+    const sseStatus = document.getElementById("sseStatus");
 
-    const ACTION_LABELS = {
-      chat: "💬 일반 대화",
-      music_play: "🎵 음악 재생",
-      music_stop: "⏹️ 음악 정지",
-      leave: "👋 채널 퇴장"
-    };
+    const uptimeVal = document.getElementById("uptimeVal");
+    const memoryVal = document.getElementById("memoryVal");
+    const presetVal = document.getElementById("presetVal");
+    const sessionsVal = document.getElementById("sessionsVal");
+    const botTagPill = document.getElementById("botTagPill");
 
-    function escapeHtml(str) {
-      return String(str || "")
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;")
-        .replace(/"/g, "&quot;")
-        .replace(/'/g, "&#39;");
-    }
-
-    function formatKstTime(iso) {
-      try {
-        const d = new Date(iso);
-        return d.toLocaleString("ko-KR", {
-          timeZone: "Asia/Seoul",
-          year: "numeric",
-          month: "2-digit",
-          day: "2-digit",
-          hour: "2-digit",
-          minute: "2-digit",
-          second: "2-digit",
-          hour12: false
-        });
-      } catch {
-        return iso;
-      }
-    }
-
-    function updateUserDropdown() {
-      const currentVal = userFilter.value;
-      const users = Array.from(new Set(allLogs.map((l) => l.userName))).sort();
-      userFilter.innerHTML = '<option value="">전체 사용자</option>' +
-        users.map((u) => '<option value="' + escapeHtml(u) + '">' + escapeHtml(u) + '</option>').join("");
-      if (users.includes(currentVal)) {
-        userFilter.value = currentVal;
-      }
-    }
-
-    function renderStatus(status) {
-      if (!status) return;
-      if (status.voicePreset) {
-        voicePresetPill.textContent = "🗣️ 목소리: " + status.voicePreset.label;
-      }
-      const sessions = status.sessions || [];
-      if (sessions.length === 0) {
-        sessionList.innerHTML = '<span style="color: var(--text-secondary); font-size: 13px;">현재 활성화된 음성 채널 세션이 없습니다. (디스코드에서 <code>설아야 이리온</code> 입력 시 연결)</span>';
-      } else {
-        sessionList.innerHTML = sessions.map((s) => {
-          const modeLabel = s.playbackMode === "music" ? "🎵 음악 재생 중" : s.playbackMode === "tts" ? "🗣️ 설아 발화 중" : (s.voiceChatEnabled ? "🎙️ 실시간 듣기 활성" : "🔇 듣기 일시중지");
-          return '<div class="session-chip"><strong>' + escapeHtml(s.guildName) + ' · #' + escapeHtml(s.channelName) + '</strong><span>(' + modeLabel + ')</span></div>';
-        }).join("");
-      }
-    }
-
-    function renderLogs() {
-      const q = searchInput.value.trim().toLowerCase();
-      const selectedUser = userFilter.value;
-
-      const filtered = allLogs.filter((item) => {
-        if (selectedUser && item.userName !== selectedUser) return false;
-        if (!q) return true;
-        return (
-          item.userName.toLowerCase().includes(q) ||
-          item.userText.toLowerCase().includes(q) ||
-          item.botReply.toLowerCase().includes(q) ||
-          item.channelName.toLowerCase().includes(q)
-        );
-      });
-
-      countPill.textContent = "기록 " + filtered.length + "건";
-
-      if (filtered.length === 0) {
-        logContainer.innerHTML =
-          '<div class="empty-state"><div class="icon">🎙️</div><p>표시할 음성 대화록이 없습니다.</p></div>';
-        return;
-      }
-
-      logContainer.innerHTML = filtered.map((item) => {
-        const badgeLabel = ACTION_LABELS[item.actionType] || ACTION_LABELS.chat;
-        const durationBadge = item.durationSec ? ' · ' + escapeHtml(item.durationSec) + '초' : '';
-        return (
-          '<article class="log-item">' +
-            '<div class="log-meta">' +
-              '<div class="meta-left">' +
-                '<span class="user-badge">🎙️ ' + escapeHtml(item.userName) + '</span>' +
-                '<span class="channel-badge">' + escapeHtml(item.guildName) + ' / #' + escapeHtml(item.channelName) + durationBadge + '</span>' +
-                '<span class="type-badge type-' + escapeHtml(item.actionType) + '">' + badgeLabel + '</span>' +
-              '</div>' +
-              '<time>' + escapeHtml(formatKstTime(item.createdAt)) + '</time>' +
-            '</div>' +
-            '<div class="turn-row turn-user">' +
-              '<span class="turn-label">' + escapeHtml(item.userName) + '</span>' +
-              '<div class="turn-text">' + escapeHtml(item.userText) + '</div>' +
-            '</div>' +
-            '<div class="turn-row turn-bot">' +
-              '<span class="turn-label">설아</span>' +
-              '<div class="turn-text">' + escapeHtml(item.botReply) + '</div>' +
-            '</div>' +
-          '</article>'
-        );
-      }).join("");
-
-      if (autoScrollToggle.checked) {
-        logContainer.scrollTop = logContainer.scrollHeight;
-      }
-    }
-
+    // 1. 초기 데이터 로드
     async function fetchInitialData() {
       try {
         const res = await fetch("/api/voice-logs");
         if (!res.ok) return;
         const data = await res.json();
         allLogs = data.logs || [];
-        updateUserDropdown();
         renderStatus(data.status);
         renderLogs();
+        updateUserFilter();
       } catch (err) {
-        console.error("대화록 로드 실패:", err);
+        console.error("데이터 로드 실패:", err);
       }
     }
 
+    // 2. 상태 렌더링
+    function renderStatus(status) {
+      if (!status) return;
+      botTagPill.textContent = "🤖 " + (status.botTag || "Seola");
+      memoryVal.textContent = (status.memoryMb || 0) + " MB";
+      uptimeVal.textContent = formatUptime(status.uptimeSec || 0);
+      if (status.voicePreset) {
+        presetVal.textContent = status.voicePreset.label;
+        document.getElementById("presetSelect").value = status.voicePreset.id;
+      }
+      activeSessions = status.sessions || [];
+      sessionsVal.textContent = activeSessions.length + "개";
+    }
+
+    function formatUptime(sec) {
+      if (sec < 60) return sec + "초";
+      const m = Math.floor(sec / 60);
+      const s = sec % 60;
+      if (m < 60) return m + "분 " + s + "초";
+      const h = Math.floor(m / 60);
+      return h + "시간 " + (m % 60) + "분";
+    }
+
+    // 3. 로그 렌더링 및 검색 필터링
+    function renderLogs() {
+      const query = (searchInput.value || "").trim().toLowerCase();
+      const selectedUser = userFilter.value;
+
+      const filtered = allLogs.filter((log) => {
+        if (selectedUser && log.userName !== selectedUser) return false;
+        if (!query) return true;
+        return (
+          log.userText.toLowerCase().includes(query) ||
+          log.botReply.toLowerCase().includes(query) ||
+          log.userName.toLowerCase().includes(query)
+        );
+      });
+
+      if (filtered.length === 0) {
+        logsContainer.innerHTML = '<div style="text-align: center; color: var(--text-muted); padding: 40px;">대화록이 없습니다.</div>';
+        return;
+      }
+
+      logsContainer.innerHTML = filtered
+        .map((log) => {
+          const isMusic = log.actionType === "music_play";
+          const dateStr = new Date(log.createdAt).toLocaleTimeString("ko-KR", {
+            hour: "2-digit", minute: "2-digit", second: "2-digit"
+          });
+
+          return \`
+            <div class="log-card" id="log-\${log.id}">
+              <div class="log-header">
+                <div class="log-meta">
+                  <span class="badge \${isMusic ? "badge-music" : "badge-chat"}">\${isMusic ? "음악 재생" : "음성 대화"}</span>
+                  <strong>\${escapeHtml(log.userName)}</strong>
+                  <span>\${escapeHtml(log.channelName || "")}</span>
+                  \${log.durationSec ? \`<span>⏱️ \${log.durationSec}</span>\` : ""}
+                </div>
+                <div style="display: flex; align-items: center; gap: 8px;">
+                  <span>\${dateStr}</span>
+                  <button class="btn btn-danger btn-sm" onclick="deleteLog(\${log.id})">🗑️ 삭제</button>
+                </div>
+              </div>
+              <div class="speech-bubble user-bubble">
+                🎤 <strong>\${escapeHtml(log.userName)}:</strong> \${escapeHtml(log.userText)}
+              </div>
+              <div class="speech-bubble bot-bubble">
+                🌸 <strong>설아:</strong> \${escapeHtml(log.botReply)}
+              </div>
+            </div>
+          \`;
+        })
+        .join("");
+    }
+
+    function updateUserFilter() {
+      const users = Array.from(new Set(allLogs.map((l) => l.userName))).filter(Boolean);
+      const curr = userFilter.value;
+      userFilter.innerHTML = '<option value="">모든 사용자</option>' +
+        users.map((u) => \`<option value="\${escapeHtml(u)}">\${escapeHtml(u)}</option>\`).join("");
+      userFilter.value = curr;
+    }
+
+    function escapeHtml(str) {
+      if (!str) return "";
+      return String(str)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+    }
+
+    // 4. 단일 로그 삭제
+    window.deleteLog = async function(id) {
+      if (!confirm("이 대화 기록을 삭제할까요?")) return;
+      try {
+        const res = await fetch("/api/voice-logs/" + id, { method: "DELETE" });
+        if (res.ok) {
+          allLogs = allLogs.filter((l) => l.id !== id);
+          renderLogs();
+        }
+      } catch (err) {
+        alert("삭제 실패: " + err.message);
+      }
+    };
+
+    // 5. 원격 제어 이벤트 리스너
+    document.getElementById("applyPersonaBtn").addEventListener("click", async () => {
+      const personaId = document.getElementById("personaSelect").value;
+      const userName = userFilter.value || "micha";
+      try {
+        const res = await fetch("/api/control/persona", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ userName, personaId }),
+        });
+        const data = await res.json();
+        alert(data.message || "페르소나가 변경되었습니다!");
+      } catch (e) {
+        alert("변경 실패: " + e.message);
+      }
+    });
+
+    document.getElementById("applyPresetBtn").addEventListener("click", async () => {
+      const presetId = document.getElementById("presetSelect").value;
+      try {
+        const res = await fetch("/api/control/voice-preset", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ presetId }),
+        });
+        const data = await res.json();
+        alert(data.message || "목소리 프리셋이 변경되었습니다!");
+      } catch (e) {
+        alert("변경 실패: " + e.message);
+      }
+    });
+
+    document.getElementById("pauseVoiceBtn").addEventListener("click", async () => {
+      const guildId = activeSessions[0]?.guildId;
+      if (!guildId) return alert("현재 음성 채널에 연결되어 있지 않습니다.");
+      await fetch("/api/control/voice-session", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ guildId, action: "pause" }),
+      });
+    });
+
+    document.getElementById("resumeVoiceBtn").addEventListener("click", async () => {
+      const guildId = activeSessions[0]?.guildId;
+      if (!guildId) return alert("현재 음성 채널에 연결되어 있지 않습니다.");
+      await fetch("/api/control/voice-session", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ guildId, action: "resume" }),
+      });
+    });
+
+    document.getElementById("leaveVoiceBtn").addEventListener("click", async () => {
+      const guildId = activeSessions[0]?.guildId;
+      if (!guildId) return alert("현재 음성 채널에 연결되어 있지 않습니다.");
+      await fetch("/api/control/voice-session", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ guildId, action: "leave" }),
+      });
+    });
+
+    document.getElementById("playMusicBtn").addEventListener("click", async () => {
+      const songTitle = document.getElementById("songSelect").value;
+      const guildId = activeSessions[0]?.guildId;
+      if (!guildId) return alert("먼저 디스코드 음성 채널에 봇을 입장시켜 주세요!");
+      await fetch("/api/control/music", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ guildId, action: "play", songTitle }),
+      });
+    });
+
+    document.getElementById("stopMusicBtn").addEventListener("click", async () => {
+      const guildId = activeSessions[0]?.guildId;
+      if (!guildId) return;
+      await fetch("/api/control/music", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ guildId, action: "stop" }),
+      });
+    });
+
+    document.getElementById("clearAllBtn").addEventListener("click", async () => {
+      if (!confirm("모든 음성 대화록을 삭제하시겠습니까?")) return;
+      await fetch("/api/voice-logs", { method: "DELETE" });
+    });
+
+    searchInput.addEventListener("input", renderLogs);
+    userFilter.addEventListener("change", renderLogs);
+    document.getElementById("refreshBtn").addEventListener("click", fetchInitialData);
+
+    // 6. 탭 전환
+    const tabLogsBtn = document.getElementById("tabLogsBtn");
+    const tabMemoryBtn = document.getElementById("tabMemoryBtn");
+    const logsTabPane = document.getElementById("logsTabPane");
+    const memoryTabPane = document.getElementById("memoryTabPane");
+
+    tabLogsBtn.addEventListener("click", () => {
+      tabLogsBtn.classList.add("active");
+      tabMemoryBtn.classList.remove("active");
+      logsTabPane.style.display = "flex";
+      memoryTabPane.classList.remove("active");
+    });
+
+    tabMemoryBtn.addEventListener("click", () => {
+      tabMemoryBtn.classList.add("active");
+      tabLogsBtn.classList.remove("active");
+      logsTabPane.style.display = "none";
+      memoryTabPane.classList.add("active");
+      loadMemories();
+    });
+
+    // 7. 장기 기억(RAG) 관리 로직
+    async function loadMemories() {
+      const grid = document.getElementById("memoriesGrid");
+      const user = document.getElementById("memUser").value || "micha";
+      try {
+        const res = await fetch("/api/memories?user=" + encodeURIComponent(user));
+        const data = await res.json();
+        const list = data.memories || [];
+        if (list.length === 0) {
+          grid.innerHTML = '<div style="color: var(--text-muted); padding: 20px;">아직 저장된 장기 기억이 없습니다.</div>';
+          return;
+        }
+        grid.innerHTML = list.map((m) => \`
+          <div class="memory-card">
+            <div class="memory-card-header">
+              <span>🏷️ \${escapeHtml(m.category)}</span>
+              <span>⭐ 중요도 \${m.importance}</span>
+            </div>
+            <div style="font-size: 14px; color: var(--text-primary); line-height: 1.4;">
+              \${escapeHtml(m.memory)}
+            </div>
+            <div style="display: flex; justify-content: flex-end;">
+              <button class="btn btn-danger btn-sm" onclick="deleteMemory(\${m.id})">삭제</button>
+            </div>
+          </div>
+        \`).join("");
+      } catch (err) {
+        grid.innerHTML = '<div style="color: var(--danger);">기억 로드 실패</div>';
+      }
+    }
+
+    document.getElementById("addMemoryForm").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const userName = document.getElementById("memUser").value.trim();
+      const memory = document.getElementById("memText").value.trim();
+      const category = document.getElementById("memCategory").value;
+
+      if (!userName || !memory) return;
+      try {
+        await fetch("/api/memories", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ userName, memory, category, importance: 4 }),
+        });
+        document.getElementById("memText").value = "";
+        loadMemories();
+      } catch (err) {
+        alert("기억 저장 실패: " + err.message);
+      }
+    });
+
+    window.deleteMemory = async function(id) {
+      if (!confirm("이 기억을 삭제하시겠습니까?")) return;
+      await fetch("/api/memories/" + id, { method: "DELETE" });
+      loadMemories();
+    };
+
+    // 8. SSE 실시간 연결
     function connectSse() {
       const es = new EventSource("/api/voice-logs/stream");
       es.onopen = () => {
         sseDot.className = "dot live";
-        sseStatusText.textContent = "실시간 수신 중";
+        sseStatus.textContent = "실시간 연결 중";
       };
       es.onerror = () => {
         sseDot.className = "dot warn";
-        sseStatusText.textContent = "재연결 대기 중...";
+        sseStatus.textContent = "재연결 대기 중...";
       };
       es.addEventListener("voice_log", (e) => {
         try {
           const entry = JSON.parse(e.data);
           allLogs.push(entry);
-          updateUserDropdown();
+          updateUserFilter();
+          renderLogs();
+        } catch {}
+      });
+      es.addEventListener("delete_log", (e) => {
+        try {
+          const { id } = JSON.parse(e.data);
+          allLogs = allLogs.filter((l) => l.id !== id);
           renderLogs();
         } catch {}
       });
@@ -754,18 +1021,10 @@ const renderDashboardHtml = (): string => `<!DOCTYPE html>
       });
       es.addEventListener("clear_logs", () => {
         allLogs = [];
-        updateUserDropdown();
+        updateUserFilter();
         renderLogs();
       });
     }
-
-    searchInput.addEventListener("input", renderLogs);
-    userFilter.addEventListener("change", renderLogs);
-    document.getElementById("refreshBtn").addEventListener("click", fetchInitialData);
-    document.getElementById("clearBtn").addEventListener("click", async () => {
-      if (!confirm("저장된 음성 대화록을 모두 삭제할까요?")) return;
-      await fetch("/api/voice-logs", { method: "DELETE" });
-    });
 
     fetchInitialData();
     connectSse();
@@ -774,13 +1033,16 @@ const renderDashboardHtml = (): string => `<!DOCTYPE html>
 </html>`;
 
 /**
- * Express 앱에 대시보드 페이지 및 실시간 API/SSE 라우트를 등록합니다.
+ * Express 앱에 대시보드 페이지 및 실시간 API/SSE/제어 라우트를 등록합니다.
  */
 export const registerDashboardRoutes = (
   app: Express,
   getStatusSnapshot: () => DashboardStatusSnapshot,
 ): void => {
-  // 대시보드 메인 웹 UI ('/' 및 '/dashboard' 모두 지원)
+  // JSON body parser 미들웨어 등록
+  app.use(express.json());
+
+  // 1. 대시보드 메인 웹 UI
   const serveDashboardPage = (_req: Request, res: Response) => {
     res.setHeader("Content-Type", "text/html; charset=utf-8");
     res.send(renderDashboardHtml());
@@ -789,12 +1051,12 @@ export const registerDashboardRoutes = (
   app.get("/", serveDashboardPage);
   app.get("/dashboard", serveDashboardPage);
 
-  // 헬스체크 엔드포인트
+  // 2. 헬스체크 엔드포인트
   app.get("/health", (_req: Request, res: Response) => {
     res.json({ status: "ok", message: "Bot is running!" });
   });
 
-  // 음성 대화록 및 현재 상태 조회 REST API
+  // 3. 음성 대화록 및 현재 상태 조회 REST API
   app.get("/api/voice-logs", async (req: Request, res: Response) => {
     const rawLimit = Number(req.query["limit"] || 200);
     const limit = Number.isFinite(rawLimit)
@@ -807,13 +1069,163 @@ export const registerDashboardRoutes = (
     });
   });
 
-  // 음성 대화록 비우기 REST API
+  // 4. 단일 음성 대화록 삭제 REST API
+  app.delete("/api/voice-logs/:id", async (req: Request, res: Response) => {
+    const rawId = req.params["id"];
+    const id = parseInt(Array.isArray(rawId) ? rawId[0] || "" : rawId || "", 10);
+    if (Number.isNaN(id)) {
+      res.status(400).json({ error: "유효하지 않은 ID입니다." });
+      return;
+    }
+    await deleteVoiceTranscript(id);
+    res.json({ success: true, id });
+  });
+
+  // 5. 음성 대화록 전체 비우기 REST API
   app.delete("/api/voice-logs", async (_req: Request, res: Response) => {
     await clearVoiceTranscripts();
     res.json({ success: true });
   });
 
-  // 실시간 음성 대화록 스트리밍 SSE 엔드포인트
+  // 6. 실시간 제어 API: 페르소나 변경
+  app.post("/api/control/persona", async (req: Request, res: Response) => {
+    const { userName = "micha", personaId } = req.body || {};
+    if (!personaId || !(personaId in PERSONA_DEFINITIONS)) {
+      res.status(400).json({ error: "유효하지 않은 페르소나 ID입니다." });
+      return;
+    }
+
+    try {
+      const result = await setUserPersona(userName, personaId as PersonaId);
+      res.json({
+        success: true,
+        message: `${userName}님의 페르소나가 ${result.persona.name}(으)로 변경되었습니다.`,
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 7. 실시간 제어 API: 목소리 프리셋 변경
+  app.post("/api/control/voice-preset", (req: Request, res: Response) => {
+    const { presetId } = req.body || {};
+    if (!presetId) {
+      res.status(400).json({ error: "presetId가 필요합니다." });
+      return;
+    }
+
+    const updated = setVoicePreset(presetId);
+    if (!updated) {
+      res.status(400).json({ error: "유효하지 않은 목소리 프리셋입니다." });
+      return;
+    }
+
+    notifyDashboardStatusChanged(getStatusSnapshot());
+    res.json({
+      success: true,
+      message: `목소리가 ${updated.label}(으)로 변경되었습니다.`,
+    });
+  });
+
+  // 8. 실시간 제어 API: 음성 채널 세션 제어 (pause, resume, leave)
+  app.post("/api/control/voice-session", (req: Request, res: Response) => {
+    const { guildId, action } = req.body || {};
+    if (!guildId || !action) {
+      res.status(400).json({ error: "guildId와 action이 필요합니다." });
+      return;
+    }
+
+    if (action === "pause") {
+      setVoiceChatEnabled(guildId, false);
+    } else if (action === "resume") {
+      setVoiceChatEnabled(guildId, true);
+    } else if (action === "leave") {
+      leaveVoiceChannel(guildId);
+    }
+
+    notifyDashboardStatusChanged(getStatusSnapshot());
+    res.json({ success: true, action, guildId });
+  });
+
+  // 9. 실시간 제어 API: 음악 제어 (play, stop)
+  app.post("/api/control/music", (req: Request, res: Response) => {
+    const { guildId, action, songTitle } = req.body || {};
+    if (!guildId || !action) {
+      res.status(400).json({ error: "guildId와 action이 필요합니다." });
+      return;
+    }
+
+    if (action === "stop") {
+      setGuildPlaybackMode(guildId, "idle");
+      notifyDashboardStatusChanged(getStatusSnapshot());
+      res.json({ success: true, action: "stop" });
+      return;
+    }
+
+    if (action === "play") {
+      if (!songTitle || !songMap[songTitle]) {
+        res.status(400).json({ error: "유효하지 않은 곡명입니다." });
+        return;
+      }
+      setGuildPlaybackMode(guildId, "music");
+      notifyDashboardStatusChanged(getStatusSnapshot());
+      res.json({ success: true, action: "play", songTitle });
+      return;
+    }
+
+    res.status(400).json({ error: "지원하지 않는 action입니다." });
+  });
+
+  // 10. 개인화 장기 기억(RAG) REST API
+  app.get("/api/memories", async (req: Request, res: Response) => {
+    const userName = String(req.query["user"] || "micha");
+    const memories = await listUserMemories(userName);
+    res.json({ memories });
+  });
+
+  app.post("/api/memories", async (req: Request, res: Response) => {
+    const { userName, memory, category, importance } = req.body || {};
+    if (!userName || !memory) {
+      res.status(400).json({ error: "userName과 memory가 필요합니다." });
+      return;
+    }
+    const item = await saveUserMemory({
+      userName,
+      memory,
+      category,
+      importance,
+    });
+    res.json({ success: true, item });
+  });
+
+  app.delete("/api/memories/:id", async (req: Request, res: Response) => {
+    const rawId = req.params["id"];
+    const id = parseInt(Array.isArray(rawId) ? rawId[0] || "" : rawId || "", 10);
+    if (Number.isNaN(id)) {
+      res.status(400).json({ error: "유효하지 않은 ID입니다." });
+      return;
+    }
+    await deleteUserMemory(id);
+    res.json({ success: true, id });
+  });
+
+  // 11. 특정 유저 대화 문맥(Context) 삭제 REST API
+  app.delete("/api/contexts/:userName", async (req: Request, res: Response) => {
+    const rawUser = req.params["userName"];
+    const userName = Array.isArray(rawUser) ? rawUser[0] || "" : rawUser || "";
+    if (!userName) {
+      res.status(400).json({ error: "userName이 필요합니다." });
+      return;
+    }
+    try {
+      await db.delete(contextsTable).where(eq(contextsTable.name, userName));
+      res.json({ success: true, message: `${userName}님의 대화 문맥이 초기화되었습니다.` });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 12. 실시간 음성 대화록 스트리밍 SSE 엔드포인트
   app.get("/api/voice-logs/stream", (req: Request, res: Response) => {
     res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
     res.setHeader("Cache-Control", "no-cache, no-transform");

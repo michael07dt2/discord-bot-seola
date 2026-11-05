@@ -12,9 +12,9 @@ import { sql } from "drizzle-orm";
 export const contextsTable = pgTable(
   "contexts",
   {
-    id: integer().primaryKey().generatedAlwaysAsIdentity(),
-    name: varchar({ length: 255 }).notNull(),
-    context: text().notNull(),
+    id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+    name: varchar("name", { length: 255 }).notNull(),
+    context: text("context").notNull(),
     createdAt: timestamp("created_at", { withTimezone: true })
       .defaultNow()
       .notNull(),
@@ -49,6 +49,22 @@ export const voiceLogsTable = pgTable("voice_logs", {
   actionType: varchar("action_type", { length: 50 }).default("chat").notNull(),
   durationSec: varchar("duration_sec", { length: 32 }),
   createdAt: timestamp("created_at", { withTimezone: true })
+    .defaultNow()
+    .notNull(),
+});
+
+// 사용자별 개인화 장기 기억(RAG)을 저장하는 테이블
+export const userMemoriesTable = pgTable("user_memories", {
+  id: integer().primaryKey().generatedAlwaysAsIdentity(),
+  userName: varchar("user_name", { length: 255 }).notNull(),
+  memory: text("memory").notNull(),
+  category: varchar("category", { length: 50 }).default("general").notNull(),
+  importance: integer("importance").default(3).notNull(),
+  embedding: text("embedding"), // Float 배열의 JSON 직렬화
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .defaultNow()
+    .notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
     .defaultNow()
     .notNull(),
 });

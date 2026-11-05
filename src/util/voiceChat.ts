@@ -689,15 +689,107 @@ export interface SynthesizedSpeechResource {
   cleanup?: () => void;
 }
 
+export type EmotionType =
+  | "happy"
+  | "sad"
+  | "angry"
+  | "calm"
+  | "whisper"
+  | "playful"
+  | "neutral";
+
+export interface EmotionProfile {
+  type: EmotionType;
+  filter?: string;
+  speedMultiplier: number;
+}
+
+/**
+ * 발화 텍스트의 감정 태그([기쁨], [슬픔] 등) 또는 어휘 문맥을 분석하여 오디오 DSP 필터 산출
+ */
+export const detectEmotionProfile = (text: string): EmotionProfile => {
+  const normalized = text.toLowerCase();
+
+  // 1. 명시적 감정 태그 검사
+  if (/\[(?:기쁨|신남|행복|happy|joy)\]/i.test(normalized)) {
+    return {
+      type: "happy",
+      filter: "asetrate=44100*1.08,atempo=1/1.08*1.05,equalizer=f=3800:t=q:w=1:g=2.5",
+      speedMultiplier: 1.05,
+    };
+  }
+  if (/\[(?:슬픔|우울|눈물|sad|sorrow)\]/i.test(normalized)) {
+    return {
+      type: "sad",
+      filter: "asetrate=44100*0.93,atempo=1/0.93*0.94,equalizer=f=250:t=q:w=1:g=2,lowpass=f=4500",
+      speedMultiplier: 0.94,
+    };
+  }
+  if (/\[(?:화남|새침|흥|angry|tsundere)\]/i.test(normalized)) {
+    return {
+      type: "angry",
+      filter: "asetrate=44100*1.07,atempo=1/1.07*1.10,equalizer=f=3200:t=q:w=1:g=2",
+      speedMultiplier: 1.10,
+    };
+  }
+  if (/\[(?:속삭임|비밀|whisper)\]/i.test(normalized)) {
+    return {
+      type: "whisper",
+      filter: "lowpass=f=4000,volume=1.25,atempo=0.96",
+      speedMultiplier: 0.96,
+    };
+  }
+  if (/\[(?:차분|진지|calm)\]/i.test(normalized)) {
+    return {
+      type: "calm",
+      filter: "asetrate=44100*0.96,atempo=1/0.96,equalizer=f=300:t=q:w=1:g=2",
+      speedMultiplier: 0.98,
+    };
+  }
+  if (/\[(?:장난|애교|귀여움|playful)\]/i.test(normalized)) {
+    return {
+      type: "playful",
+      filter: "asetrate=44100*1.12,atempo=1/1.12*1.06,equalizer=f=4000:t=q:w=1:g=3",
+      speedMultiplier: 1.06,
+    };
+  }
+
+  // 2. 어휘 및 기호 기반 자연어 감정 추론
+  if (/(?:헤헤|히히|꺄아|좋아|최고|축하|신나|대박|고마워|사랑해)/.test(normalized)) {
+    return {
+      type: "happy",
+      filter: "asetrate=44100*1.06,atempo=1/1.06*1.04,equalizer=f=3800:t=q:w=1:g=2",
+      speedMultiplier: 1.04,
+    };
+  }
+  if (/(?:ㅠㅠ|ㅜㅜ|슬퍼|속상|힘들|아쉬워|미안|아파)/.test(normalized)) {
+    return {
+      type: "sad",
+      filter: "asetrate=44100*0.94,atempo=1/0.94*0.95,lowpass=f=4800",
+      speedMultiplier: 0.95,
+    };
+  }
+  if (/(?:흥|바보야|어이없어|딱히|착각하지\s*마|뭐래)/.test(normalized)) {
+    return {
+      type: "angry",
+      filter: "asetrate=44100*1.06,atempo=1/1.06*1.08",
+      speedMultiplier: 1.08,
+    };
+  }
+
+  return { type: "neutral", speedMultiplier: 1.0 };
+};
+
 /**
  * 단일 문장을 TTS 오디오 리소스로 합성
- * - 1순위(기본): 로컬 한국어 전용 신경망 MeloTTS-Korean (44.1kHz 16-bit WAV 인메모리 스트림)
+ * - 1순위(기본): 로컬 한국어 전용 신경망 MeloTTS-Korean (44.1kHz 16-bit WAV 인메모리 스트림 + 감정 DSP 필터)
  * - 2순위(폴백/Edge 프리셋): Microsoft Edge 신경망 TTS (96kbps MP3)
  * - 3순위(오프라인 폴백): macOS 내장 `say` (Yuna)
  */
 export const synthesizeSpeechResource = async (
   rawText: string,
 ): Promise<SynthesizedSpeechResource | null> => {
+  const emotion = detectEmotionProfile(rawText);
   const speakableText = cleanTextForTTS(rawText);
   if (!speakableText) {
     return null;
@@ -705,14 +797,16 @@ export const synthesizeSpeechResource = async (
 
   const preset = getCurrentVoicePreset();
 
-  // 1차: 로컬 MeloTTS-Korean 엔진 (한국어 억양/장단음 최적화)
+  // 1차: 로컬 MeloTTS-Korean 엔진 (한국어 억양/장단음 최적화 + 실시간 감정 필터링)
   if (preset.engine === "melotts") {
     try {
+      const activeFilter = emotion.filter || preset.meloFilter;
+      const baseSpeed = preset.meloSpeed ?? 1.0;
+      const effectiveSpeed = Math.round(baseSpeed * emotion.speedMultiplier * 100) / 100;
+
       const meloResult = await synthesizeMeloSentence(speakableText, {
-        ...(preset.meloSpeed !== undefined ? { speed: preset.meloSpeed } : {}),
-        ...(preset.meloFilter !== undefined
-          ? { filter: preset.meloFilter }
-          : {}),
+        speed: effectiveSpeed,
+        ...(activeFilter ? { filter: activeFilter } : {}),
         ...(preset.meloNoiseScale !== undefined
           ? { noiseScale: preset.meloNoiseScale }
           : {}),
@@ -1051,11 +1145,11 @@ export const setupVoiceChatListener = (params: {
 
     session.activeUsers.add(userId);
 
-    // 650ms 동안 침묵이 유지되면 한 문장 발화가 끝난 것으로 판단 (응답 체감 지연시간 단축)
+    // 420ms 동안 침묵이 유지되면 한 문장 발화가 끝난 것으로 판단 (응답 체감 지연시간 단축)
     const opusStream = connection.receiver.subscribe(userId, {
       end: {
         behavior: EndBehaviorType.AfterSilence,
-        duration: 650,
+        duration: 420,
       },
     });
 

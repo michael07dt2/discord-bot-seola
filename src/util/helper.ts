@@ -19,6 +19,10 @@ import {
   setUserPersona,
   type PersonaId,
 } from "./persona.ts";
+import {
+  extractAndStoreImplicitMemories,
+  retrieveRelevantMemories,
+} from "./memoryRag.ts";
 import { OpenAI } from "openai";
 import type { ChatCompletionMessageParam } from "openai/resources/chat/completions/completions.js";
 import "dotenv/config";
@@ -309,7 +313,7 @@ const extractModelCommand = (
   return null;
 };
 
-// LLM 토큰 스트리밍 중 문장 종결부호(. ! ? … ~ \n) 단위로 즉시 콜백을 호출하는 헬퍼
+// LLM 토큰 스트리밍 중 문장 종결부호(. ! ? … ~ \n) 단위로 즉시 콜백을 호출하는 헬퍼 (TTFA 최적화)
 const streamCompletionWithSentences = async (
   model: string,
   messages: ChatCompletionMessageParam[],
@@ -325,6 +329,7 @@ const streamCompletionWithSentences = async (
 
   let rawContent = "";
   let emittedLength = 0;
+  let emittedSentenceCount = 0;
 
   const flushCompleteSentences = (isFinal: boolean) => {
     // <think> 태그가 열려 있고 아직 닫히지 않았다면 대기
@@ -345,21 +350,38 @@ const streamCompletionWithSentences = async (
         const candidate = boundaryMatch[1].trim();
         const consumed = boundaryMatch[0].length;
 
-        // 너무 짧은 감탄사("응!", "헐,")는 뒷문장과 자연스럽게 이어지도록 최소 6자 이상일 때만 분할 방출
-        if (candidate.length >= 6) {
+        // TTFA(Time-to-First-Audio) 극대화: 첫 번째 문장은 3자 이상이면 즉각 방출, 이후 문장은 6자 이상 시 방출
+        const minLength = emittedSentenceCount === 0 ? 3 : 6;
+        if (candidate.length >= minLength) {
           emittedLength += consumed;
+          emittedSentenceCount++;
           unread = visibleContent.slice(emittedLength);
           onSentence(candidate);
           continue;
         }
       }
 
-      // 구두점 없이 문장이 60자 이상 길어지고 쉼표(,) 뒤 공백이 나오면 절 단위로 조기 분할
-      const clauseMatch = unread.match(/^([\s\S]{35,90}?,)(\s+)/);
+      // 첫 문장에서 쉼표(,)가 나오면 12자 이상일 때 즉각 조기 방출하여 음성 대기 시간 단축
+      if (emittedSentenceCount === 0) {
+        const earlyClauseMatch = unread.match(/^([\s\S]{10,40}?,)(\s+)/);
+        if (earlyClauseMatch && earlyClauseMatch[1]) {
+          const candidate = earlyClauseMatch[1].trim();
+          const consumed = earlyClauseMatch[0].length;
+          emittedLength += consumed;
+          emittedSentenceCount++;
+          unread = visibleContent.slice(emittedLength);
+          onSentence(candidate);
+          continue;
+        }
+      }
+
+      // 구두점 없이 문장이 45자 이상 길어지고 쉼표(,) 뒤 공백이 나오면 절 단위로 조기 분할
+      const clauseMatch = unread.match(/^([\s\S]{25,75}?,)(\s+)/);
       if (clauseMatch && clauseMatch[1]) {
         const candidate = clauseMatch[1].trim();
         const consumed = clauseMatch[0].length;
         emittedLength += consumed;
+        emittedSentenceCount++;
         unread = visibleContent.slice(emittedLength);
         onSentence(candidate);
         continue;
@@ -372,6 +394,7 @@ const streamCompletionWithSentences = async (
       const remaining = visibleContent.slice(emittedLength).trim();
       emittedLength = visibleContent.length;
       if (remaining) {
+        emittedSentenceCount++;
         onSentence(remaining);
       }
     }
@@ -522,10 +545,19 @@ export const generateAIResponse = async (
     customPrompt: userPersona.customPrompt,
   });
 
+  // 벡터 RAG: 사용자의 과거 중요한 선호도/기억 검색
+  const relevantMemories = await retrieveRelevantMemories(userName, userMessage, 3);
+  const memorySection =
+    relevantMemories.length > 0
+      ? `\n\n# Long-term Personal Memories (${userName}님에 대해 기억하고 있는 중요한 사실들)\n` +
+        relevantMemories.map((m) => `- ${m.memory}`).join("\n") +
+        "\n*위 기억들을 자연스럽게 대화에 녹여내어 사용자를 친밀하게 알고 있음을 보여준다.*"
+      : "";
+
   const baseMessages: ChatCompletionMessageParam[] = [
     {
       role: "developer",
-      content: systemPromptContent,
+      content: systemPromptContent + memorySection,
     },
     ...contextData.map((context): ChatCompletionMessageParam => {
       const parsed = JSON.parse(context.context) as ChatCompletionMessageParam & {
@@ -664,6 +696,12 @@ export const generateAIResponse = async (
     };
 
     await db.insert(contextsTable).values(botContext);
+
+    // 백그라운드에서 사용자 장기 기억(선호, 취향 등) 자동 추출 및 RAG 저장
+    extractAndStoreImplicitMemories(userName, userMessage).catch((err) => {
+      console.warn("[MemoryRAG] 기억 추출 중 오류 무시:", err);
+    });
+
     return responseContent;
   }
 
@@ -744,4 +782,13 @@ export {
   extractPersonaCommand,
   type PersonaId,
 } from "./persona.ts";
+
+export {
+  saveUserMemory,
+  listUserMemories,
+  deleteUserMemory,
+  retrieveRelevantMemories,
+  extractAndStoreImplicitMemories,
+  type MemoryItem,
+} from "./memoryRag.ts";
 

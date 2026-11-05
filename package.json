@@ -17,7 +17,13 @@
   },
   "scripts": {
     "start": "node --watch src/index.ts",
-    "dev": "tsx watch src/index.ts"
+    "dev": "tsx watch src/index.ts",
+    "typecheck": "node ./node_modules/typescript/bin/tsc --noEmit",
+    "pm2:start": "pm2 start ecosystem.config.cjs",
+    "pm2:stop": "pm2 stop seola-bot",
+    "pm2:restart": "pm2 restart seola-bot",
+    "pm2:logs": "pm2 logs seola-bot",
+    "pm2:status": "pm2 status"
   },
   "dependencies": {
     "@discordjs/opus": "^0.11.0",
