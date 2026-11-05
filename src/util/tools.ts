@@ -248,22 +248,31 @@ export const scheduleBotRestart = (reason = "사용자 요청"): string => {
       console.error("[Tools:restart_bot] 파일 touch 실패:", err);
     }
 
-    // 2) tsx watch가 아닌 일반 `node src/index.ts` 실행인 경우 1.5초 뒤 직접 새 프로세스를 스폰하고 종료
+    // 2) 일반 `node src/index.ts` 실행인 경우 현재 프로세스가 포트(3000)를 완전히 반납한 뒤(1.2초 후) 새 프로세스가 기동되도록 셸 지연 스폰
     setTimeout(() => {
-      console.log("[Tools:restart_bot] 새 프로세스를 스폰하고 현재 프로세스를 종료합니다.");
+      console.log(
+        "[Tools:restart_bot] 현재 프로세스를 종료하고 1.2초 뒤 새 프로세스를 기동합니다.",
+      );
       const child = spawn(
-        process.execPath,
-        [...process.execArgv, ...process.argv.slice(1)],
+        "/bin/sh",
+        [
+          "-c",
+          'sleep 1.2 && exec "$@"',
+          "sh",
+          process.execPath,
+          ...process.execArgv,
+          ...process.argv.slice(1),
+        ],
         {
           cwd: process.cwd(),
           env: process.env,
           detached: true,
-          stdio: "inherit",
+          stdio: "ignore",
         },
       );
       child.unref();
       process.exit(0);
-    }, 1500);
+    }, 500);
   }, 1500);
 
   return `프로세스 재시작이 예약되었습니다 (사유: ${reason}). 약 1~2초 후 재시작됩니다.`;

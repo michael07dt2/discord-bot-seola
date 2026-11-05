@@ -16,7 +16,7 @@
     "node": ">=24.0.0"
   },
   "scripts": {
-    "start": "node src/index.ts",
+    "start": "node --watch src/index.ts",
     "dev": "tsx watch src/index.ts"
   },
   "dependencies": {
