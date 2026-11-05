@@ -1,6 +1,8 @@
 import fs from "fs";
 import path from "path";
+import { spawn } from "child_process";
 import { PassThrough, type Readable } from "stream";
+import ffmpegPath from "ffmpeg-static";
 import ort from "onnxruntime-node";
 
 const MODEL_DIR = path.resolve(process.cwd(), "models", "melotts-kr");
@@ -22,6 +24,7 @@ export interface MeloSynthesizeOptions {
   noiseScale?: number;
   noiseScaleW?: number;
   sdpRatio?: number;
+  filter?: string;
 }
 
 interface MeloConfigData {
@@ -919,6 +922,59 @@ const clauseWaveformsToWavBuffer = (
   return wavBuffer;
 };
 
+/**
+ * FFmpeg 오디오 필터 (피치 변경, 이퀄라이저 등)를 인메모리로 빠르게 적용
+ */
+export const applyFfmpegFilter = (
+  wavBuffer: Buffer,
+  audioFilter: string,
+): Promise<Buffer> => {
+  const binaryPath =
+    typeof ffmpegPath === "string"
+      ? ffmpegPath
+      : (ffmpegPath as unknown as { default?: string })?.default || "ffmpeg";
+
+  if (!audioFilter || !binaryPath) return Promise.resolve(wavBuffer);
+
+  return new Promise((resolve) => {
+    try {
+      const child = spawn(
+        binaryPath,
+        [
+          "-f",
+          "wav",
+          "-i",
+          "pipe:0",
+          "-af",
+          audioFilter,
+          "-f",
+          "wav",
+          "pipe:1",
+        ],
+        { stdio: ["pipe", "pipe", "ignore"] as const },
+      );
+
+      const chunks: Buffer[] = [];
+      child.stdout?.on("data", (chunk: Buffer) => chunks.push(chunk));
+      child.on("error", (err: Error) => {
+        console.warn("[MeloTTS] FFmpeg 필터 적용 실패:", err);
+        resolve(wavBuffer);
+      });
+      child.on("close", (code: number | null) => {
+        if (code === 0 && chunks.length > 0) {
+          resolve(Buffer.concat(chunks));
+        } else {
+          resolve(wavBuffer);
+        }
+      });
+
+      child.stdin?.end(wavBuffer);
+    } catch {
+      resolve(wavBuffer);
+    }
+  });
+};
+
 // ONNX 추론 직렬화 체인 (동시 다중 호출 시 스레드 경합 방지)
 let inferenceQueue: Promise<unknown> = Promise.resolve();
 
@@ -1030,8 +1086,13 @@ export const synthesizeMeloSentence = async (
   const nextTask = inferenceQueue.then(runTask, runTask);
   inferenceQueue = nextTask.catch(() => {});
 
-  const wavBuffer = await nextTask;
+  let wavBuffer = await nextTask;
   if (!wavBuffer) return null;
+
+  // 음색 프리셋별 고유 필터(피치 시프트, 이퀄라이저) 적용
+  if (options?.filter) {
+    wavBuffer = await applyFfmpegFilter(wavBuffer, options.filter);
+  }
 
   // Readable.from(Buffer)의 objectMode 이슈를 방지하기 위해 순수 바이너리 PassThrough 스트림 사용
   const stream = new PassThrough();

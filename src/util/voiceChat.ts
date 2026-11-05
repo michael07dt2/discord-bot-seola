@@ -57,6 +57,7 @@ export interface VoicePreset {
   description: string;
   engine: "melotts" | "edge";
   meloSpeed?: number;
+  meloFilter?: string;
   meloNoiseScale?: number;
   meloNoiseScaleW?: number;
   meloSdpRatio?: number;
@@ -69,11 +70,12 @@ export interface VoicePreset {
 export const VOICE_PRESETS: Record<string, VoicePreset> = {
   seola: {
     id: "seola",
-    label: "설아 (MeloTTS 한국어 기본)",
+    label: "설아 (MeloTTS 자연스러운 기본)",
     description:
-      "한국어 전용 신경망(MeloTTS-Korean) 기반의 가장 자연스러운 억양과 호흡 (기본값)",
+      "설아의 시그니처 톤 - 밝고 또렷한 20대 여성 목소리 (기본값)",
     engine: "melotts",
-    meloSpeed: 1.03,
+    meloSpeed: 1.04,
+    meloFilter: "asetrate=44100*1.04,atempo=1/1.04,equalizer=f=3500:t=q:w=1:g=2",
     meloNoiseScale: 0.5,
     meloNoiseScaleW: 0.6,
     meloSdpRatio: 0.2,
@@ -82,28 +84,14 @@ export const VOICE_PRESETS: Record<string, VoicePreset> = {
     pitch: "+0Hz",
     rate: "+0%",
   },
-  melo: {
-    id: "melo",
-    label: "멜로 (MeloTTS 정석 톤)",
-    description:
-      "MeloTTS-Korean 정속(1.0x) 기반의 차분하고 또렷한 한국어 음성",
-    engine: "melotts",
-    meloSpeed: 1.0,
-    meloNoiseScale: 0.48,
-    meloNoiseScaleW: 0.55,
-    meloSdpRatio: 0.2,
-    voiceName: "ko-KR-SunHiNeural",
-    voiceLocale: "ko-KR",
-    pitch: "+0Hz",
-    rate: "+0%",
-  },
   lively: {
     id: "lively",
-    label: "설아 발랄톤 (MeloTTS 경쾌)",
+    label: "발랄 (MeloTTS 통통 튀는 고음 톤)",
     description:
-      "MeloTTS-Korean 기반에 템포와 억양 변화를 살린 통통 튀는 밝은 톤",
+      "피치가 높고 경쾌한 통통 튀는 발랄한 여동생/친구 톤 (+14% 피치 상승)",
     engine: "melotts",
-    meloSpeed: 1.1,
+    meloSpeed: 1.08,
+    meloFilter: "asetrate=44100*1.14,atempo=1/1.14,equalizer=f=4000:t=q:w=1:g=3",
     meloNoiseScale: 0.55,
     meloNoiseScaleW: 0.65,
     meloSdpRatio: 0.25,
@@ -114,14 +102,44 @@ export const VOICE_PRESETS: Record<string, VoicePreset> = {
   },
   calm: {
     id: "calm",
-    label: "설아 차분톤 (MeloTTS 나긋)",
+    label: "차분 (MeloTTS 부드러운 저음 톤)",
     description:
-      "MeloTTS-Korean 기반의 조금 느리고 부드러운 나긋나긋한 대화 톤",
+      "낮고 부드러운 음색의 차분하고 나긋나긋한 성숙한 대화 톤 (-12% 피치 하강)",
     engine: "melotts",
     meloSpeed: 0.95,
+    meloFilter: "asetrate=44100*0.88,atempo=1/0.88,equalizer=f=250:t=q:w=1:g=3",
     meloNoiseScale: 0.45,
     meloNoiseScaleW: 0.5,
     meloSdpRatio: 0.15,
+    voiceName: "ko-KR-SunHiNeural",
+    voiceLocale: "ko-KR",
+    pitch: "+0Hz",
+    rate: "+0%",
+  },
+  whisper: {
+    id: "whisper",
+    label: "속삭임 (MeloTTS 조용하고 포근한 톤)",
+    description: "조용히 속삭이듯 포근하고 부드러운 저자극 나긋나긋 톤",
+    engine: "melotts",
+    meloSpeed: 0.92,
+    meloFilter: "asetrate=44100*0.96,atempo=1/0.96,lowpass=f=7500",
+    meloNoiseScale: 0.42,
+    meloNoiseScaleW: 0.48,
+    meloSdpRatio: 0.1,
+    voiceName: "ko-KR-SunHiNeural",
+    voiceLocale: "ko-KR",
+    pitch: "+0Hz",
+    rate: "+0%",
+  },
+  melo: {
+    id: "melo",
+    label: "멜로 (MeloTTS 표준 원본 톤)",
+    description: "MeloTTS-Korean 오리지널 표준 화자 음색 (필터 미적용 원음)",
+    engine: "melotts",
+    meloSpeed: 1.0,
+    meloNoiseScale: 0.48,
+    meloNoiseScaleW: 0.55,
+    meloSdpRatio: 0.2,
     voiceName: "ko-KR-SunHiNeural",
     voiceLocale: "ko-KR",
     pitch: "+0Hz",
@@ -174,6 +192,9 @@ export const setVoicePreset = (input: string): VoicePreset | null => {
     차분: "calm",
     나긋: "calm",
     calm: "calm",
+    속삭임: "whisper",
+    포근: "whisper",
+    whisper: "whisper",
     아바: "ava",
     ava: "ava",
     선희: "sunhi",
@@ -644,6 +665,9 @@ export const synthesizeSpeechResource = async (
     try {
       const meloResult = await synthesizeMeloSentence(speakableText, {
         ...(preset.meloSpeed !== undefined ? { speed: preset.meloSpeed } : {}),
+        ...(preset.meloFilter !== undefined
+          ? { filter: preset.meloFilter }
+          : {}),
         ...(preset.meloNoiseScale !== undefined
           ? { noiseScale: preset.meloNoiseScale }
           : {}),
