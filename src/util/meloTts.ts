@@ -6,6 +6,7 @@ import ort from "onnxruntime-node";
 const MODEL_DIR = path.resolve(process.cwd(), "models", "melotts-kr");
 const G2P_DIR = path.join(MODEL_DIR, "g2pkk");
 const ONNX_PATH = path.join(MODEL_DIR, "melotts_kr_fp32.onnx");
+const CONFIG_PATH = path.join(MODEL_DIR, "melotts_kr_config.json");
 const SYMBOLS_PATH = path.join(MODEL_DIR, "symbols.json");
 const TABLE_CSV_PATH = path.join(G2P_DIR, "table.csv");
 const IDIOMS_TXT_PATH = path.join(G2P_DIR, "idioms.txt");
@@ -23,21 +24,35 @@ export interface MeloSynthesizeOptions {
   sdpRatio?: number;
 }
 
-interface SymbolsData {
+interface MeloConfigData {
   symbols: string[];
-  symbol_to_id: Record<string, number>;
-  language_id_map: Record<string, number>;
-  language_tone_start_map: Record<string, number>;
+  data?: {
+    sampling_rate?: number;
+    add_blank?: boolean;
+    spk2id?: Record<string, number>;
+  };
 }
 
-interface G2PRule {
+interface SymbolsMetaData {
+  language_id_map?: Record<string, number>;
+  language_tone_start_map?: Record<string, number>;
+}
+
+interface G2PIdiomRule {
   pattern: string;
+  replacement: string;
+}
+
+interface G2PTableRegexRule {
+  regex: RegExp;
   replacement: string;
 }
 
 // ─── 한국어 숫자/특수문자/영문 발음 사전 ────────────────────────────────────────
 
 const ETC_DICTIONARY: Record<string, string> = {
+  "1+1": "원플러스원",
+  "2+1": "투플러스원",
   "1+": "원플러스",
   "2+": "투플러스",
   "3+": "쓰리플러스",
@@ -54,6 +69,12 @@ const ETC_DICTIONARY: Record<string, string> = {
 };
 
 const ENGLISH_DICTIONARY: Record<string, string> = {
+  KOREA: "코리아",
+  IDOL: "아이돌",
+  IQ: "아이큐",
+  UP: "업",
+  DOWN: "다운",
+  CCTV: "씨씨티비",
   AI: "에이아이",
   API: "에이피아이",
   CPU: "씨피유",
@@ -209,7 +230,6 @@ const BOUND_NOUNS = new Set([
   "통",
   "포기",
   "푼",
-  "닢",
   "명",
   "달",
   "병",
@@ -264,7 +284,6 @@ const numberToSinoKorean = (numStr: string): string => {
   if (!/^\d+$/.test(cleaned)) return numStr;
   if (/^0+$/.test(cleaned)) return "영";
 
-  // 너무 긴 숫자(전화번호 등)는 자리별로 읽기
   if (cleaned.length > 16 || (cleaned.length > 1 && cleaned.startsWith("0"))) {
     return cleaned
       .split("")
@@ -285,7 +304,8 @@ const numberToSinoKorean = (numStr: string): string => {
     if (digit !== "0") {
       groupHasNonZero = true;
       const isOneBeforeUnit =
-        digit === "1" && (smallIdx > 0 || (smallIdx === 0 && largeIdx === 1 && len === 5));
+        digit === "1" &&
+        (smallIdx > 0 || (smallIdx === 0 && largeIdx === 1 && len === 5));
       if (!isOneBeforeUnit) {
         result += SINO_DIGITS[digit] || "";
       }
@@ -321,14 +341,17 @@ const numberToNativeModifier = (n: number): string | null => {
  */
 const normalizeKoreanNumbers = (text: string): string => {
   // 1. 소수점 숫자 (예: 3.14 -> 삼점일사)
-  let out = text.replace(/(\d+)\.(\d+)/g, (_, intPart: string, fracPart: string) => {
-    const intKr = numberToSinoKorean(intPart);
-    const fracKr = fracPart
-      .split("")
-      .map((d) => SINO_DIGITS[d] || "")
-      .join("");
-    return `${intKr}점${fracKr}`;
-  });
+  let out = text.replace(
+    /(\d+)\.(\d+)/g,
+    (_, intPart: string, fracPart: string) => {
+      const intKr = numberToSinoKorean(intPart);
+      const fracKr = fracPart
+        .split("")
+        .map((d) => SINO_DIGITS[d] || "")
+        .join("");
+      return `${intKr}점${fracKr}`;
+    },
+  );
 
   // 2. 숫자 + 고유어 단위명사 (예: 1개 -> 한개, 2시 -> 두시, 20살 -> 스무살)
   out = out.replace(
@@ -336,8 +359,10 @@ const normalizeKoreanNumbers = (text: string): string => {
     (fullMatch, numStr: string, followingWord: string) => {
       for (const noun of BOUND_NOUNS) {
         if (followingWord === noun || followingWord.startsWith(noun)) {
-          // '분'이 시간(Minute) 의미로 쓰일 때('10분', '30분', '5분')는 한자어 수사가 자연스러움
-          if (noun === "분" && !/^(께서|께|이|은|도|만|들)/.test(followingWord.slice(1))) {
+          if (
+            noun === "분" &&
+            !/^(께서|께|이|은|도|만|들)/.test(followingWord.slice(1))
+          ) {
             return `${numberToSinoKorean(numStr)}${followingWord}`;
           }
           const n = parseInt(numStr, 10);
@@ -372,15 +397,6 @@ const normalizeEnglishToKorean = (text: string): string => {
     const upperMatch = ENGLISH_DICTIONARY[upper];
     if (upperMatch) return upperMatch;
 
-    // 짧은 대문자 약어(4글자 이하)는 알파벳 한 글자씩 읽기
-    if (word === upper && word.length <= 4) {
-      return word
-        .split("")
-        .map((ch) => UPPER_CHAR_TO_KR[ch] || "")
-        .join("");
-    }
-
-    // 나머지 영단어는 알파벳 단위로 안전하게 변환
     return upper
       .split("")
       .map((ch) => UPPER_CHAR_TO_KR[ch] || "")
@@ -388,11 +404,8 @@ const normalizeEnglishToKorean = (text: string): string => {
   });
 };
 
-// ─── G2PKK (한국어 음운 변동 규칙) ────────────────────────────────────────────
+// ─── G2PKK (한국어 음운 변동 규칙: g2pkk/special.py, table.csv, regular.py) ────
 
-/**
- * 호환용 자모(ㄱ~ㅎ, ㅏ~ㅣ)를 음절 NFD 자모(ᄀ~ᄒ, ᅡ~ᅵ)로 매핑
- */
 const COMPAT_TO_CHOSEONG: Record<string, string> = {
   ㄱ: "\u1100",
   ㄲ: "\u1101",
@@ -415,51 +428,58 @@ const COMPAT_TO_CHOSEONG: Record<string, string> = {
   ㅎ: "\u1112",
 };
 
+/**
+ * g2pkk/special.py 음운 규칙 적용
+ */
 const applyG2PSpecialRules = (inp: string): string => {
-  let text = inp;
+  let out = inp;
 
-  // 1. jyeo: ㅈ, ㅉ, ㅊ + ㅕ -> ㅓ
-  text = text.replace(/([ᄌᄍᄎ])ᅧ/g, "$1ᅥ");
+  // 1. jyeo (5.1): ㅈ, ㅉ, ㅊ + ㅕ -> ㅓ
+  out = out.replace(/([ᄌᄍᄎ])ᅧ/g, "$1ᅥ");
 
-  // 2. ye: 자음(ᄋ, ᆯ, ᆫ, ᄒ 제외) 뒤의 ᅨ -> ᅦ
-  text = text.replace(/([ᄀᄁᄃᄄᄆᄇᄈᄉᄊᄌᄍᄎᄏᄐᄑ])ᅨ/g, "$1ᅦ");
+  // 2. consonant_ui (5.3): 자음 + ᅴ -> ᅵ
+  out = out.replace(/([ᄀᄁᄂᄃᄄᄅᄆᄇᄈᄉᄊᄌᄍᄎᄏᄐᄑᄒ])ᅴ/g, "$1ᅵ");
 
-  // 3. consonant_ui: 자음(ᄋ 제외) + ᅴ -> ᅵ
-  text = text.replace(/([ᄀᄁᄂᄃᄄᄅᄆᄇᄈᄉᄊᄌᄍᄎᄏᄐᄑᄒ])ᅴ/g, "$1ᅵ");
+  // 3. jamo (16): ㄷ, ㅈ, ㅊ, ㅋ, ㅌ, ㅍ, ㅎ 어말/모음 연음 예외
+  out = out.replace(/([그])ᆮᄋ/g, "$1ᄉ");
+  out = out.replace(/([으])[ᆽᆾᇀᇂ]ᄋ/g, "$1ᄉ");
+  out = out.replace(/([으])[ᆿ]ᄋ/g, "$1ᄀ");
+  out = out.replace(/([으])[ᇁ]ᄋ/g, "$1ᄇ");
 
-  // 4. 조사 '의' 및 단어 두음 이외의 '의' 완화 (공백 뒤 첫 음절이 아닌 의 -> 에/이)
-  text = text.replace(/([가-힣\u1161-\u11C2])의/g, "$1에");
+  // 4. balb (10.1): '밟-' 및 '넓죽/넓둥' 예외
+  out = out.replace(/(바)ᆲ($|[^ᄋᄒ])/g, "$1ᆸ$2");
+  out = out.replace(/(너)ᆲ([ᄌᄍ]ᅮ|[ᄃᄄ]ᅮ)/g, "$1ᆸ$2");
 
-  // 5. jamo: 어말 및 자음 앞 겹받침 단순화
-  text = text.replace(/([ᆨᆿᇁᆭᆰ])ᆺ/g, "$1");
-  text = text.replace(/([ᆨᆰ])([ᆺᄌ])/g, "ᆨ$2");
-  text = text.replace(/([ᆫᆬ])([ᄌ])/g, "ᆫ$2");
-  text = text.replace(/([ᆯᆴ])([ᆺ])/g, "ᆯ$2");
-  text = text.replace(/ᆲ([ᆺ])/g, "ᆸ$1");
+  // 5. palatalize (17): 구개음화 (ㄷ, ㅌ + 이/히 -> 지/치)
+  out = out.replace(/ᆮᄋ([ᅵᅧ])/g, "ᄌ$1");
+  out = out.replace(/ᇀᄋ([ᅵᅧ])/g, "ᄎ$1");
+  out = out.replace(/ᆴᄋ([ᅵᅧ])/g, "ᆯᄎ$1");
+  out = out.replace(/ᆮᄒ([ᅵ])/g, "ᄎ$1");
 
-  // 6. 밟- 예외 (밟다, 밟소, 밟지, 밟고 등 -> 밥-)
-  text = text.replace(/(바)ᆲ($|[^ᄋᄒ])/g, "$1ᆸ$2");
+  // 6. modifying_rieul (27): 관형사형 'ㄹ' 뒤 된소리되기
+  const rieulPairs: [string, string][] = [
+    ["ᆯ걸", "ᆯ껄"],
+    ["ᆯ밖에", "ᆯ빠께"],
+    ["ᆯ세라", "ᆯ쎄라"],
+    ["ᆯ수록", "ᆯ쑤록"],
+    ["ᆯ지라도", "ᆯ찌라도"],
+    ["ᆯ지언정", "ᆯ찌언정"],
+    ["ᆯ진대", "ᆯ찐대"],
+  ];
+  for (const [from, to] of rieulPairs) {
+    out = out.replaceAll(from, to);
+  }
 
-  // 7. 구개음화 (ㄷ, ㅌ + 이/히 -> 지/치)
-  text = text.replace(/ᆮᄋ([ᅵᅧ])/g, "ᄌ$1");
-  text = text.replace(/ᇀᄋ([ᅵᅧ])/g, "ᄎ$1");
-  text = text.replace(/ᆴᄋ([ᅵᅧ])/g, "ᆯᄎ$1");
-  text = text.replace(/ᆮᄒ([ᅵ])/g, "ᄎ$1");
-
-  // 8. 관형사형 'ㄹ' 뒤 경음화 (할 것을 -> 할 꺼슬, 갈 데 -> 갈 떼 등)
-  text = text.replace(/ᆯ ᄀ/g, "ᆯ ᄁ");
-  text = text.replace(/ᆯ ᄃ/g, "ᆯ ᄄ");
-  text = text.replace(/ᆯ ᄇ/g, "ᆯ ᄈ");
-  text = text.replace(/ᆯ ᄉ/g, "ᆯ ᄊ");
-  text = text.replace(/ᆯ ᄌ/g, "ᆯ ᄍ");
-
-  return text;
+  return out;
 };
 
+/**
+ * g2pkk/regular.py 연음(Liaison) 및 ㅎ 탈락 규칙 적용
+ */
 const applyG2PLiaisonRules = (inp: string): string => {
-  let text = inp;
+  let out = inp;
 
-  // link1: 홑받침/쌍받침 연음 (ㅇ 제외)
+  // link1 (13): 홑받침/쌍받침 연음
   const link1Pairs: [string, string][] = [
     ["ᆨᄋ", "ᄀ"],
     ["ᆩᄋ", "ᄁ"],
@@ -477,10 +497,10 @@ const applyG2PLiaisonRules = (inp: string): string => {
     ["ᇁᄋ", "ᄑ"],
   ];
   for (const [from, to] of link1Pairs) {
-    text = text.replaceAll(from, to);
+    out = out.replaceAll(from, to);
   }
 
-  // link2: 겹받침 연음
+  // link2 (14): 겹받침 연음
   const link2Pairs: [string, string][] = [
     ["ᆪᄋ", "ᆨᄊ"],
     ["ᆬᄋ", "ᆫᄌ"],
@@ -493,10 +513,10 @@ const applyG2PLiaisonRules = (inp: string): string => {
     ["ᆹᄋ", "ᆸᄊ"],
   ];
   for (const [from, to] of link2Pairs) {
-    text = text.replaceAll(from, to);
+    out = out.replaceAll(from, to);
   }
 
-  // link3: 어절 경계(공백) 넘어 연음 완화 (자연스러운 일상 발음)
+  // link3 (15): 어절 경계 연음
   const link3Pairs: [string, string][] = [
     ["ᆨ ᄋ", " ᄀ"],
     ["ᆩ ᄋ", " ᄁ"],
@@ -523,29 +543,37 @@ const applyG2PLiaisonRules = (inp: string): string => {
     ["ᆹ ᄋ", "ᆸ ᄊ"],
   ];
   for (const [from, to] of link3Pairs) {
-    text = text.replaceAll(from, to);
+    out = out.replaceAll(from, to);
   }
 
-  // link4: ㅎ 탈락 (ㅎ, ㄶ, ㅀ + ㅇ)
-  text = text.replaceAll("ᇂᄋ", "ᄋ");
-  text = text.replaceAll("ᆭᄋ", "ᄂ");
-  text = text.replaceAll("ᆶᄋ", "ᄅ");
+  // link4 (12.4): ㅎ, ㄶ, ㅀ + ㅇ 연음 시 ㅎ 탈락
+  out = out.replaceAll("ᇂᄋ", "ᄋ");
+  out = out.replaceAll("ᆭᄋ", "ᄂ");
+  out = out.replaceAll("ᆶᄋ", "ᄅ");
 
-  return text;
+  // utils.py compose: 초성이 없는 중성 앞에 ᄋ 보충
+  out = out.replace(/(^|[^\u1100-\u1112])([\u1161-\u1175])/g, "$1ᄋ$2");
+
+  return out;
 };
 
 // ─── 싱글톤 모델 및 G2P 리소스 로더 ──────────────────────────────────────────
 
 interface MeloTTSRuntime {
   session: ort.InferenceSession;
-  symbolsData: SymbolsData;
-  tableRules: G2PRule[];
-  idiomRules: G2PRule[];
+  symbolToId: Record<string, number>;
+  krLangId: number;
+  krToneStart: number;
+  tableRules: G2PTableRegexRule[];
+  idiomRules: G2PIdiomRule[];
 }
 
 let runtimePromise: Promise<MeloTTSRuntime> | null = null;
 
-const downloadFileIfMissing = async (url: string, destPath: string): Promise<void> => {
+const downloadFileIfMissing = async (
+  url: string,
+  destPath: string,
+): Promise<void> => {
   if (fs.existsSync(destPath) && fs.statSync(destPath).size > 0) {
     return;
   }
@@ -559,8 +587,8 @@ const downloadFileIfMissing = async (url: string, destPath: string): Promise<voi
   fs.writeFileSync(destPath, Buffer.from(arrayBuffer));
 };
 
-const parseIdioms = (raw: string): G2PRule[] => {
-  const rules: G2PRule[] = [];
+const parseIdioms = (raw: string): G2PIdiomRule[] => {
+  const rules: G2PIdiomRule[] = [];
   for (const line of raw.split(/\r?\n/)) {
     const trimmed = line.split("#")[0]?.trim();
     if (!trimmed || !trimmed.includes("===")) continue;
@@ -572,35 +600,44 @@ const parseIdioms = (raw: string): G2PRule[] => {
   return rules;
 };
 
-const parseTableCsv = (raw: string): G2PRule[] => {
-  const lines = raw
-    .split(/\r?\n/)
-    .map((l) => l.trim())
-    .filter(Boolean);
+/**
+ * g2pkk/utils.py의 parse_table()과 동일하게 table.csv의 정규식 규칙을 파싱
+ * - Python 3의 `\W`는 유니코드 비단어 문자(공백/구두점)만 매칭하므로,
+ *   JavaScript RegExp에서는 한글 자모(`\u1100-\u11FF`)와 음절(`\uAC00-\uD7A3`)이 제외되도록 변환
+ * - Python 역참조 `\1`을 JS `$1`로 변환하고 규칙 번호 `(12)`, `(9/23)` 등을 제거
+ */
+const parseTableCsv = (raw: string): G2PTableRegexRule[] => {
+  const lines = raw.split(/\r?\n/).filter(Boolean);
   if (lines.length < 2) return [];
 
-  const onsets = lines[0]!.split(",").slice(1);
-  const rules: G2PRule[] = [];
+  const onsets = lines[0]!.split(",");
+  const rules: G2PTableRegexRule[] = [];
 
-  for (let i = 1; i < lines.length; i++) {
-    const cols = lines[i]!.split(",");
+  for (let rowIdx = 1; rowIdx < lines.length; rowIdx++) {
+    const cols = lines[rowIdx]!.split(",");
     const coda = cols[0];
     if (!coda) continue;
 
-    for (let j = 0; j < onsets.length; j++) {
-      const onset = onsets[j];
-      const cell = cols[j + 1];
+    for (let colIdx = 1; colIdx < onsets.length; colIdx++) {
+      const onset = onsets[colIdx];
+      const cell = cols[colIdx];
       if (!onset || !cell) continue;
 
-      const pattern = coda + onset;
-      // NFD 자모로 정규화하여 비교/치환
-      const normPattern = pattern.normalize("NFD");
-      const normReplacement = cell.normalize("NFD");
-      if (normPattern !== normReplacement) {
-        rules.push({ pattern: normPattern, replacement: normReplacement });
-      }
+      const jsOnsetPattern = onset.replace(
+        "(\\W|$)",
+        "([^\\u1100-\\u11FF\\uAC00-\\uD7A3A-Za-z0-9_]|$)",
+      );
+      const patternStr = `${coda}${jsOnsetPattern}`;
+      const rawReplacement = cell.includes("(") ? cell.split("(")[0]! : cell;
+      const jsReplacement = rawReplacement.replace(/\\1/g, "$1");
+
+      rules.push({
+        regex: new RegExp(patternStr, "g"),
+        replacement: jsReplacement,
+      });
     }
   }
+
   return rules;
 };
 
@@ -615,6 +652,10 @@ export const preloadMeloTTSModel = async (): Promise<MeloTTSRuntime> => {
           `${HF_BASE_URL}/melotts_kr_fp32.onnx`,
           ONNX_PATH,
         ),
+        downloadFileIfMissing(
+          `${HF_BASE_URL}/melotts_kr_config.json`,
+          CONFIG_PATH,
+        ),
         downloadFileIfMissing(`${HF_BASE_URL}/symbols.json`, SYMBOLS_PATH),
         downloadFileIfMissing(
           `${HF_BASE_URL}/g2pkk/table.csv`,
@@ -627,24 +668,39 @@ export const preloadMeloTTSModel = async (): Promise<MeloTTSRuntime> => {
       ]);
 
       console.log("[MeloTTS] 로컬 MeloTTS-Korean ONNX 엔진 초기화 중...");
-      const [session, symbolsRaw, tableRaw, idiomsRaw] = await Promise.all([
-        ort.InferenceSession.create(ONNX_PATH, {
-          intraOpNumThreads: 4,
-          interOpNumThreads: 1,
-        }),
-        fs.promises.readFile(SYMBOLS_PATH, "utf-8"),
-        fs.promises.readFile(TABLE_CSV_PATH, "utf-8"),
-        fs.promises.readFile(IDIOMS_TXT_PATH, "utf-8"),
-      ]);
+      const [session, configRaw, symbolsRaw, tableRaw, idiomsRaw] =
+        await Promise.all([
+          ort.InferenceSession.create(ONNX_PATH, {
+            intraOpNumThreads: 4,
+            interOpNumThreads: 1,
+          }),
+          fs.promises.readFile(CONFIG_PATH, "utf-8"),
+          fs.promises.readFile(SYMBOLS_PATH, "utf-8"),
+          fs.promises.readFile(TABLE_CSV_PATH, "utf-8"),
+          fs.promises.readFile(IDIOMS_TXT_PATH, "utf-8"),
+        ]);
 
-      const symbolsData = JSON.parse(symbolsRaw) as SymbolsData;
+      // 중요: 모델 체크포인트와 정확히 일치하는 심볼 테이블은 melotts_kr_config.json의 symbols 배열을 사용해야 함
+      // (symbols.json은 '¡', '¿' 정렬 순서 차이로 인해 한국어 자모 인덱스가 2칸씩 밀려 있음)
+      const configData = JSON.parse(configRaw) as MeloConfigData;
+      const symbolsMeta = JSON.parse(symbolsRaw) as SymbolsMetaData;
+
+      const symbolToId: Record<string, number> = {};
+      configData.symbols.forEach((sym, idx) => {
+        symbolToId[sym] = idx;
+      });
+
+      const krLangId = symbolsMeta.language_id_map?.["KR"] ?? 4;
+      const krToneStart = symbolsMeta.language_tone_start_map?.["KR"] ?? 11;
       const tableRules = parseTableCsv(tableRaw);
       const idiomRules = parseIdioms(idiomsRaw);
 
       console.log("[MeloTTS] MeloTTS-Korean 로컬 엔진 준비 완료 (44.1kHz FP32)");
       return {
         session,
-        symbolsData,
+        symbolToId,
+        krLangId,
+        krToneStart,
         tableRules,
         idiomRules,
       };
@@ -657,6 +713,36 @@ export const preloadMeloTTSModel = async (): Promise<MeloTTSRuntime> => {
   return runtimePromise;
 };
 
+const PUNCTUATION_SET = new Set(["!", "?", "…", ",", ".", "'", "-"]);
+
+/**
+ * 단일 어절(또는 문장 조각)에 대해 g2pkk 음운 변동 및 NFD 자모 변환 수행
+ */
+const koreanWordToPhonemes = (
+  word: string,
+  runtime: MeloTTSRuntime,
+): string => {
+  // 단독 호환 자음(ㄱ~ㅎ)이 있으면 초성 자모로 변환 후 NFD 분해
+  const replacedCompat = word.replace(
+    /[ㄱ-ㅎ]/g,
+    (ch) => COMPAT_TO_CHOSEONG[ch] || "",
+  );
+  let jamo = replacedCompat.normalize("NFD");
+
+  // 1. special.py 음운 규칙
+  jamo = applyG2PSpecialRules(jamo);
+
+  // 2. table.csv 받침+초성 음운 변동 및 어말 7종성 중화 규칙
+  for (const rule of runtime.tableRules) {
+    jamo = jamo.replace(rule.regex, rule.replacement);
+  }
+
+  // 3. regular.py 연음 법칙 및 초성 ᄋ 보충
+  jamo = applyG2PLiaisonRules(jamo);
+
+  return jamo;
+};
+
 /**
  * 한국어 문장을 MeloTTS-Korean 입력용 Jamo 음소 배열 및 토큰 시퀀스로 변환
  */
@@ -667,7 +753,11 @@ const textToMeloSequence = (
   let text = rawSentence.trim();
   if (!text) return null;
 
-  // 1. 특수 기호 치환
+  // 1. 한자 제거 및 특수 기호 치환
+  text = text.replace(
+    /[⺀-⺙⺛-⻳⼀-⿕々〇〡-〩〸-〺〻㐀-䶵一-鿃豈-鶴侮-頻並-龎]/g,
+    "",
+  );
   for (const [k, v] of Object.entries(ETC_DICTIONARY)) {
     text = text.replaceAll(k, v);
   }
@@ -683,48 +773,42 @@ const textToMeloSequence = (
   // 4. 숫자 -> 한글 수사 변환
   text = normalizeKoreanNumbers(text);
 
-  // 5. 물결표(~) 및 말줄임표 정규화 (MeloTTS 구두점 심볼 호환)
+  // 5. 물결표(~) 및 말줄임표 정규화
   text = text
     .replace(/~+/g, ",")
     .replace(/\.{2,}|…+/g, "…")
     .replace(/["""]/g, "")
     .replace(/[''']/g, "'");
 
-  // 6. 단독 자음(ㄱ~ㅎ)이 남아있으면 초성 자모로 치환 후 전체 NFD 자모 분해
-  text = text.replace(/[ㄱ-ㅎ]/g, (ch) => COMPAT_TO_CHOSEONG[ch] || "");
-  let jamoText = text.normalize("NFD");
+  // 6. MeloTTS korean.py의 g2p()와 동일하게 구두점과 단어 토큰을 분리하여 각 단어별로 korean_text_to_phonemes 수행
+  const tokens =
+    text.match(/[가-힣ㄱ-ㅎㅏ-ㅣ]+|[!?…,.''-]/g)?.filter(Boolean) ?? [];
+  if (tokens.length === 0) return null;
 
-  // 7. G2PKK 음운 변동 적용 (특수 규칙 -> 자음동화/경음화 테이블 -> 연음 규칙)
-  jamoText = applyG2PSpecialRules(jamoText);
-  for (const rule of runtime.tableRules) {
-    if (jamoText.includes(rule.pattern)) {
-      jamoText = jamoText.replaceAll(rule.pattern, rule.replacement);
-    }
-  }
-  jamoText = applyG2PLiaisonRules(jamoText);
-
-  // 8. symbols.json 매핑
-  const symbolToId = runtime.symbolsData.symbol_to_id;
-  const krLangId = runtime.symbolsData.language_id_map["KR"] ?? 4;
-  const krToneStart = runtime.symbolsData.language_tone_start_map["KR"] ?? 11;
-
-  const rawTokenIds: number[] = [];
+  const { symbolToId, krLangId, krToneStart } = runtime;
   const startEndId = symbolToId["_"] ?? 0;
+  const rawTokenIds: number[] = [startEndId];
 
-  rawTokenIds.push(startEndId);
-  for (const ch of jamoText) {
-    if (ch === " ") {
-      // 어절 경계에 짧은 쉼표/휴지 토큰 대신 공백 무시 (MeloTTS korean_text_to_phonemes는 공백을 제거함)
+  for (const token of tokens) {
+    if (PUNCTUATION_SET.has(token)) {
+      const pid = symbolToId[token];
+      if (pid !== undefined) {
+        rawTokenIds.push(pid);
+      }
       continue;
     }
-    const id = symbolToId[ch];
-    if (id !== undefined) {
-      rawTokenIds.push(id);
+
+    const phonemes = koreanWordToPhonemes(token, runtime);
+    for (const ch of phonemes) {
+      const id = symbolToId[ch];
+      if (id !== undefined) {
+        rawTokenIds.push(id);
+      }
     }
   }
+
   rawTokenIds.push(startEndId);
 
-  // 실제 발음할 음소가 하나도 없으면(구두점만 있는 경우) 건너뜀
   if (rawTokenIds.length <= 2) {
     return null;
   }
@@ -745,7 +829,6 @@ const textToMeloSequence = (
 
 /**
  * Float32Array(-1.0 ~ 1.0) 오디오 파형을 16-bit PCM WAV Buffer로 변환
- * - 문장 간 이어붙일 때 자연스러운 호흡을 위해 앞뒤 과도한 무음(Silence)을 다듬고 짧은 여백(45ms)만 유지
  */
 const float32ToWavBuffer = (
   samples: Float32Array,
@@ -768,7 +851,7 @@ const float32ToWavBuffer = (
     endIdx--;
   }
 
-  // 앞쪽 25ms, 뒤쪽 65ms 정도의 자연스러운 여백 유지
+  // 앞쪽 25ms, 뒤쪽 65ms 여백 유지
   const padStart = Math.floor(sampleRate * 0.025);
   const padEnd = Math.floor(sampleRate * 0.065);
   startIdx = Math.max(0, startIdx - padStart);
@@ -783,13 +866,13 @@ const float32ToWavBuffer = (
   wavBuffer.writeUInt32LE(36 + dataByteLength, 4);
   wavBuffer.write("WAVE", 8);
   wavBuffer.write("fmt ", 12);
-  wavBuffer.writeUInt32LE(16, 16); // PCM chunk size
-  wavBuffer.writeUInt16LE(1, 20); // AudioFormat = 1 (PCM)
-  wavBuffer.writeUInt16LE(1, 22); // NumChannels = 1 (Mono)
-  wavBuffer.writeUInt32LE(sampleRate, 24); // SampleRate
-  wavBuffer.writeUInt32LE(sampleRate * 2, 28); // ByteRate
-  wavBuffer.writeUInt16LE(2, 32); // BlockAlign
-  wavBuffer.writeUInt16LE(16, 34); // BitsPerSample
+  wavBuffer.writeUInt32LE(16, 16);
+  wavBuffer.writeUInt16LE(1, 20);
+  wavBuffer.writeUInt16LE(1, 22);
+  wavBuffer.writeUInt32LE(sampleRate, 24);
+  wavBuffer.writeUInt32LE(sampleRate * 2, 28);
+  wavBuffer.writeUInt16LE(2, 32);
+  wavBuffer.writeUInt16LE(16, 34);
   wavBuffer.write("data", 36);
   wavBuffer.writeUInt32LE(dataByteLength, 40);
 
@@ -893,15 +976,11 @@ export const synthesizeMeloSentence = async (
 
 /**
  * 응답 텍스트를 문장 단위 스트리밍 재생에 적합하도록 분할
- * - 마침표(.), 물음표(?), 느낌표(!), 말줄임표(…), 줄바꿈(\n) 기준으로 문장을 분리
- * - 너무 짧은 감탄사("응!", "헐,", "맞아!")는 단독 재생 시 끊기는 느낌을 줄이기 위해 뒤 문장과 자연스럽게 병합
- * - 반대로 구두점 없이 너무 긴 문장(65자 이상)은 쉼표(,)나 연결어미 단위로 한 번 더 분할하여 첫 오디오 지연 최소화
  */
 export const splitTextIntoSentences = (cleanedText: string): string[] => {
   const normalized = cleanedText.trim();
   if (!normalized) return [];
 
-  // 문장 종결부호(. ! ? … ~) 또는 줄바꿈 뒤에서 분리하되 종결부호는 앞 문장에 유지
   const rawSegments = normalized
     .split(/(?<=[.!?…~])\s+|\n+/g)
     .map((s) => s.trim())
@@ -920,7 +999,6 @@ export const splitTextIntoSentences = (cleanedText: string): string[] => {
     }
   }
 
-  // 너무 짧은 조각(4자 이하)은 다음 문장과 결합하여 억양 자연스러움 유지
   const merged: string[] = [];
   let buffer = "";
 
