@@ -320,13 +320,14 @@ const streamCompletionWithSentences = async (
   model: string,
   messages: ChatCompletionMessageParam[],
   onSentence: (sentence: string) => void,
-  options?: { maxTokens?: number },
+  options?: { maxTokens?: number; disableThinking?: boolean },
 ): Promise<string> => {
   const stream = await openAiClient.chat.completions.create({
     model,
     messages,
     stream: true,
     ...(options?.maxTokens ? { max_tokens: options.maxTokens } : {}),
+    ...(options?.disableThinking ? { extra_body: { think: false } } : {}),
   });
 
   let rawContent = "";
@@ -569,6 +570,7 @@ export const generateAIResponse = async (
     ? `\n\n# Voice Call Mode (실시간 음성 통화 모드 - 최우선 절대 규칙)
 - 현재 텍스트 메신저가 아니라 디스코드 음성 채널에서 실시간 목소리로 통화 중이다.
 - [답변 길이 엄격 제한]: 답변은 반드시 1문장(최대 2문장), 공백 포함 40자 이내로 매우 짧고 간결하게 대답한다.
+- [추론(Thinking) 및 독백 금지]: <think> 태그나 내부 추론/생각 과정을 절대로 출력하지 말고, 생각 과정 없이 즉시 말할 최종 대사만 바로 출력한다.
 - [괄호/지문/행동묘사 절대 금지]: TTS(음성 합성 엔진)가 그대로 소리 내어 읽으므로, 어조 지문, 표정 지문, 행동 묘사, 괄호 표현(예: (웃으며), (다정하게), **(목소리로 대답한다)**, [미소], *미소*)을 단 한 글자도 출력하지 마라.
 - 'ㅋㅋ', 'ㅎㅎ', 'ㅠㅠ', 'ㅜㅜ', 이모티콘, 마크다운 기호를 절대 쓰지 말고, 실제로 입으로 발음하여 소리 낼 한국어 대사만 바로 출력한다.${multiPersonConstraint}`
     : "";
@@ -644,7 +646,9 @@ export const generateAIResponse = async (
         selectedModel,
         toolMessages,
         options.onSentence,
-        options?.isVoiceMode ? { maxTokens: 80 } : undefined,
+        options?.isVoiceMode
+          ? { maxTokens: 80, disableThinking: true }
+          : undefined,
       );
     } else {
       const completion = await openAiClient.chat.completions.create({
@@ -654,12 +658,14 @@ export const generateAIResponse = async (
       responseContent = completion.choices[0]?.message.content;
     }
   } else if (options?.onSentence) {
-    // 실시간 음성 통화 모드: 첫 문장이 생성되는 즉시 TTS 파이프라인으로 스트리밍 전달하여 응답 지연 최소화 (짧은 대답 유지를 위해 80 토큰 제한)
+    // 실시간 음성 통화 모드: 첫 문장이 생성되는 즉시 TTS 파이프라인으로 스트리밍 전달하여 응답 지연 최소화 (짧은 대답 유지를 위해 80 토큰 제한 및 추론(Thinking) 비활성화)
     responseContent = await streamCompletionWithSentences(
       selectedModel,
       baseMessages,
       options.onSentence,
-      options?.isVoiceMode ? { maxTokens: 80 } : undefined,
+      options?.isVoiceMode
+        ? { maxTokens: 80, disableThinking: true }
+        : undefined,
     );
   } else {
     // 일반 대화 중 LLM이 자율적으로 도구(web_search 등) 호출 여부를 판단하도록 Function Calling 시도

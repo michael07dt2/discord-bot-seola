@@ -1165,11 +1165,10 @@ export const setupVoiceChatListener = (params: {
 
     session.activeUsers.add(userId);
 
-    // 420ms 동안 침묵이 유지되면 한 문장 발화가 끝난 것으로 판단 (응답 체감 지연시간 단축)
     const opusStream = connection.receiver.subscribe(userId, {
       end: {
         behavior: EndBehaviorType.AfterSilence,
-        duration: 420,
+        duration: 750,
       },
     });
 
@@ -1214,24 +1213,33 @@ export const setupVoiceChatListener = (params: {
         .then(async () => {
           const transcriber = await preloadWhisperModel();
           const sttStartMs = Date.now();
-          const result = await (
-            transcriber as unknown as (
-              audio: Float32Array,
-              options: Record<string, unknown>,
-            ) => Promise<{ text: string } | { text: string }[]>
-          )(samples, {
-            language: "korean",
-            task: "transcribe",
-            // 25초 이상 긴 발화일 때만 청크 슬라이딩 윈도우를 활성화하고, 일반 대화는 단일 패스로 빠르게 디코딩
-            ...(durationSec > 25
-              ? { chunk_length_s: 30, stride_length_s: 5 }
-              : {}),
-            max_new_tokens: 128,
-            num_beams: 1,
-            temperature: 0.0,
-            repetition_penalty: 1.15,
-            no_repeat_ngram_size: 3,
-          });
+          let result: { text: string } | { text: string }[];
+          try {
+            result = await (
+              transcriber as unknown as (
+                audio: Float32Array,
+                options: Record<string, unknown>,
+              ) => Promise<{ text: string } | { text: string }[]>
+            )(samples, {
+              language: "korean",
+              task: "transcribe",
+              // 25초 이상 긴 발화일 때만 청크 슬라이딩 윈도우를 활성화하고, 일반 대화는 단일 패스로 빠르게 디코딩
+              ...(durationSec > 25
+                ? { chunk_length_s: 30, stride_length_s: 5 }
+                : {}),
+              max_new_tokens: 128,
+              num_beams: 1,
+              temperature: 0.0,
+              repetition_penalty: 1.15,
+              no_repeat_ngram_size: 3,
+            });
+          } catch (sttErr: any) {
+            // 무음/잡음 등으로 인한 빈 토큰 디코딩 예외는 안전하게 무시
+            if (sttErr?.message?.includes("token_ids")) {
+              return;
+            }
+            throw sttErr;
+          }
           const sttElapsedMs = Date.now() - sttStartMs;
 
           const rawText = Array.isArray(result)
