@@ -338,9 +338,9 @@ const streamCompletionWithSentences = async (
     let unread = visibleContent.slice(emittedLength);
 
     while (unread.length > 0) {
-      // 1) 앞부분에 있는 괄호 지문((지문), **(지문)**, *지문* 등)은 문장으로 읽지 않고 즉시 스킵
+      // 1) 앞부분에 있는 괄호 지문((지문), **(지문)**, [지문] 등)은 문장으로 읽지 않고 즉시 스킵 (강조 문맥은 보존)
       const leadingActionMatch = unread.match(
-        /^\s*(?:\*\*\s*\([^)]*\)\s*\*\*|\*\*\s*\[[^\]]*\]\s*\*\*|\*\*[^*]+\*\*|\*[^*]+\*|\([^()]*\)|\[[^[\]]*\]|\{[^{}]*\}|（[^（）]*）|【[^【】]*】)\s*/,
+        /^\s*(?:\*\*\s*\([^)]*\)\s*\*\*|\*\*\s*\[[^\]]*\]\s*\*\*|\*\s*\([^)]*\)\s*\*|\([^()]*\)|\[[^[\]]*\]|\{[^{}]*\}|（[^（）]*）|【[^【】]*】)\s*/,
       );
       if (leadingActionMatch) {
         emittedLength += leadingActionMatch[0].length;

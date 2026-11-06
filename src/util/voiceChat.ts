@@ -650,11 +650,9 @@ const cleanTextForTTS = (text: string): string => {
     .replace(/`([^`]+)`/g, "$1")
     // <think>...</think> 등 태그 블록 제거
     .replace(/<think>[\s\S]*?<\/think>/gi, "")
-    // **(지문)**, *(지문)* 및 **지문**, *지문* 제거
+    // **(지문)**, *(지문)* 등 마크다운으로 감싸진 괄호 지문 제거 (강조 텍스트의 내용은 보존)
     .replace(/\*\*\s*\([^)]*\)\s*\*\*/g, "")
-    .replace(/\*\s*\([^)]*\)\s*\*/g, "")
-    .replace(/\*\*[^*]+\*\*/g, "")
-    .replace(/\*[^*]+\*/g, "");
+    .replace(/\*\s*\([^)]*\)\s*\*/g, "");
 
   // 중첩 괄호를 포함해 소괄호(), 대괄호[], 중괄호{}, 전각 괄호（）【】 내부 텍스트 완전 제거
   let prev = "";
@@ -1373,7 +1371,7 @@ export const setupVoiceChatListener = (params: {
           }
 
           // 4. 일반 AI 실시간 대화 응답 생성 및 문장 단위 스트리밍 TTS 발화 (채팅 채널에는 전송하지 않고 대시보드에만 기록)
-          const promptText = s`${stripSeolaWakeWord(transcribedText)} /no_think`;
+          const promptText = `${stripSeolaWakeWord(transcribedText)} /no_think`;
           console.log(
             `[VoiceChat:Debug] 🚀 AI 대답 생성 시작: prompt="${promptText}", user="${userName}"`,
           );
