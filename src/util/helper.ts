@@ -322,14 +322,8 @@ const streamCompletionWithSentences = async (
   onSentence: (sentence: string) => void,
   options?: { maxTokens?: number; disableThinking?: boolean },
 ): Promise<string> => {
-  const stream = await openAiClient.chat.completions.create({
-    model,
-    messages,
-    stream: true,
-    ...(options?.maxTokens ? { max_tokens: options.maxTokens } : {}),
-    ...(options?.disableThinking ? { extra_body: { think: false } } : {}),
-  });
-
+  const startTime = Date.now();
+  let firstChunkMs: number | null = null;
   let rawContent = "";
   let emittedLength = 0;
   let emittedSentenceCount = 0;
@@ -368,12 +362,12 @@ const streamCompletionWithSentences = async (
         const candidate = boundaryMatch[1].trim();
         const consumed = boundaryMatch[0].length;
 
-        // 괄호 내부의 구두점(예: (매우 부드럽고 다정한 목소리로, ...))에 걸린 경우 괄호가 닫힐 때까지 보류
+        // 괄호 내부의 구두점에 걸린 경우 괄호가 닫힐 때까지 보류
         if (hasUnclosedParen(candidate) && !isFinal) {
           break;
         }
 
-        // TTFA(Time-to-First-Audio) 극대화: 첫 번째 문장은 3자 이상이면 즉각 방출, 이후 문장은 6자 이상 시 방출
+        // TTFA 극대화: 첫 번째 문장은 3자 이상이면 즉각 방출, 이후 문장은 6자 이상 시 방출
         const minLength = emittedSentenceCount === 0 ? 3 : 6;
         if (candidate.length >= minLength) {
           emittedLength += consumed;
@@ -384,7 +378,7 @@ const streamCompletionWithSentences = async (
         }
       }
 
-      // 첫 문장에서 쉼표(,)가 나오면 12자 이상일 때 즉각 조기 방출하여 음성 대기 시간 단축
+      // 첫 문장에서 쉼표(,)가 나오면 10자 이상일 때 즉각 조기 방출하여 음성 대기 시간 단축
       if (emittedSentenceCount === 0) {
         const earlyClauseMatch = unread.match(/^([\s\S]{10,40}?,)(\s+)/);
         if (earlyClauseMatch && earlyClauseMatch[1]) {
@@ -403,7 +397,7 @@ const streamCompletionWithSentences = async (
         }
       }
 
-      // 구두점 없이 문장이 45자 이상 길어지고 쉼표(,) 뒤 공백이 나오면 절 단위로 조기 분할
+      // 구두점 없이 문장이 길어지고 쉼표(,) 뒤 공백이 나오면 절 단위로 조기 분할
       const clauseMatch = unread.match(/^([\s\S]{25,75}?,)(\s+)/);
       if (clauseMatch && clauseMatch[1]) {
         const candidate = clauseMatch[1].trim();
@@ -425,7 +419,6 @@ const streamCompletionWithSentences = async (
 
     if (isFinal) {
       let remaining = visibleContent.slice(emittedLength).trim();
-      // 마지막 잔여 텍스트에서도 지문/괄호 블록 제거
       remaining = remaining
         .replace(/^\s*(?:\*\*\s*\([^)]*\)\s*\*\*|\*\*[^*]+\*\*|\*[^*]+\*|\([^()]*\)|\[[^[\]]*\]|（[^（）]*）|【[^【】]*】)\s*/g, "")
         .trim();
@@ -437,16 +430,96 @@ const streamCompletionWithSentences = async (
     }
   };
 
-  for await (const chunk of stream) {
-    const delta = chunk.choices[0]?.delta?.content;
-    if (delta) {
-      rawContent += delta;
-      flushCompleteSentences(false);
+  // 1차 시도: Ollama 네이티브 /api/chat 엔드포인트 직접 호출 (think: false 완벽 지원 및 0초 지연)
+  let streamedViaNativeOllama = false;
+  try {
+    const ollamaMessages = messages.map((m) => ({
+      role: m.role === "developer" ? "system" : m.role,
+      content: typeof m.content === "string" ? m.content : "",
+    }));
+
+    const res = await fetch(`${CONFIG.OLLAMA_BASE_URL}/api/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model,
+        messages: ollamaMessages,
+        ...(options?.disableThinking ? { think: false } : {}),
+        stream: true,
+        options: {
+          num_predict: options?.maxTokens || 120,
+        },
+      }),
+      signal: AbortSignal.timeout(15000),
+    });
+
+    if (res.ok && res.body) {
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          try {
+            const json = JSON.parse(line);
+            const delta = json.message?.content;
+            if (delta) {
+              if (firstChunkMs === null) {
+                firstChunkMs = Date.now() - startTime;
+                console.log(`[LLM:Stream] ⚡ 첫 토큰 도달 (TTFA: ${firstChunkMs}ms)`);
+              }
+              rawContent += delta;
+              flushCompleteSentences(false);
+            }
+          } catch {}
+        }
+      }
+      streamedViaNativeOllama = true;
+    }
+  } catch (err: any) {
+    console.warn(`[LLM:Stream] Ollama 네이티브 스트리밍 실패 (${err.message}), OpenAI 호환 클라이언트로 폴백합니다.`);
+  }
+
+  // 2차 폴백: OpenAI 호환 API 클라이언트
+  if (!streamedViaNativeOllama) {
+    try {
+      const stream = await openAiClient.chat.completions.create({
+        model,
+        messages,
+        stream: true,
+        ...(options?.maxTokens ? { max_tokens: options.maxTokens } : {}),
+        ...(options?.disableThinking ? { extra_body: { think: false } } : {}),
+      });
+
+      for await (const chunk of stream) {
+        const delta = chunk.choices[0]?.delta?.content;
+        if (delta) {
+          if (firstChunkMs === null) {
+            firstChunkMs = Date.now() - startTime;
+            console.log(`[LLM:Stream] ⏱️ (폴백) 첫 토큰 도달 (TTFA: ${firstChunkMs}ms)`);
+          }
+          rawContent += delta;
+          flushCompleteSentences(false);
+        }
+      }
+    } catch (fallbackErr: any) {
+      console.error(`[LLM:Stream] ❌ 모든 LLM 스트리밍 실패:`, fallbackErr);
     }
   }
 
   flushCompleteSentences(true);
-  return rawContent.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
+  const finalReply = rawContent.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
+  console.log(
+    `[LLM:Stream] ✅ LLM 응답 생성 완료 (${Date.now() - startTime}ms, 방출 문장수: ${emittedSentenceCount}, 길이: ${finalReply.length}자)`,
+  );
+  return finalReply;
 };
 
 export const generateAIResponse = async (

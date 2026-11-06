@@ -1206,6 +1206,9 @@ export const setupVoiceChatListener = (params: {
         rms < MIN_RMS_THRESHOLD ||
         peak < MIN_PEAK_THRESHOLD
       ) {
+        console.log(
+          `[VoiceChat:Debug] 🔇 미세 소음 무시: duration=${durationSec.toFixed(2)}s, rms=${rms.toFixed(4)}, peak=${peak.toFixed(3)}`,
+        );
         return;
       }
 
@@ -1248,6 +1251,9 @@ export const setupVoiceChatListener = (params: {
           const transcribedText = postProcessKoreanSttText(rawText);
 
           if (!isMeaningfulTranscription(transcribedText)) {
+            console.log(
+              `[VoiceChat:Debug] 🔇 무의미한 발화로 판단되어 무시: raw="${rawText}" -> "${transcribedText}"`,
+            );
             return;
           }
 
@@ -1367,7 +1373,11 @@ export const setupVoiceChatListener = (params: {
           }
 
           // 4. 일반 AI 실시간 대화 응답 생성 및 문장 단위 스트리밍 TTS 발화 (채팅 채널에는 전송하지 않고 대시보드에만 기록)
-          const promptText = stripSeolaWakeWord(transcribedText);
+          const promptText = s`${stripSeolaWakeWord(transcribedText)} /no_think`;
+          console.log(
+            `[VoiceChat:Debug] 🚀 AI 대답 생성 시작: prompt="${promptText}", user="${userName}"`,
+          );
+
           const speechPipeline = createSentenceSpeechPipeline(
             connection,
             player,
@@ -1380,11 +1390,15 @@ export const setupVoiceChatListener = (params: {
             humanMemberCount,
             channel: session.textChannel,
             onSentence: (sentence) => {
+              console.log(`[VoiceChat:Debug] 🔊 TTS 파이프라인 문장 투입: "${sentence}"`);
               speechPipeline.enqueueSentence(sentence);
             },
           });
 
           if (!aiReply) {
+            console.warn(
+              `[VoiceChat:Warn] ⚠️ AI 응답 생성 결과가 비어있어(null 또는 빈 문자열) 발화를 건너뜁니다. (prompt="${promptText}")`,
+            );
             await speechPipeline.finish();
             return;
           }
