@@ -25,6 +25,11 @@ import {
 } from "./helper.ts";
 import { songMap } from "./songmap.ts";
 import {
+  playMusicTrack,
+  stopGuildMusic,
+  getGuildCurrentTrack,
+} from "./youtubeMusic.ts";
+import {
   getBotStatusReport,
   getSelfImproveStatusReport,
   performWebSearch,
@@ -214,30 +219,18 @@ export const slashCommands = [
   new SlashCommandBuilder()
     .setName("music")
     .setNameLocalization("ko", "음악")
-    .setDescription("음성 채널에서 음악을 재생하거나 멈춥니다.")
+    .setDescription("음성 채널에서 로컬 음악 또는 유튜브 노래를 재생하거나 멈춥니다.")
     .addSubcommand((sub) =>
       sub
         .setName("play")
         .setNameLocalization("ko", "재생")
-        .setDescription("곡을 재생합니다.")
+        .setDescription("로컬 음원 또는 유튜브 노래를 검색하여 재생합니다.")
         .addStringOption((opt) =>
           opt
-            .setName("title")
-            .setNameLocalization("ko", "곡명")
-            .setDescription("재생할 곡명 키워드")
-            .setRequired(true)
-            .addChoices(
-              { name: "아리아 (Aria)", value: "아리아" },
-              { name: "어웨이크 (Awake)", value: "어웨이크" },
-              { name: "브레이크 더 체인 (Break the Chain)", value: "브레이크 더 체인" },
-              { name: "크레이지 (Crazy)", value: "크레이지" },
-              { name: "리다인 (Redine)", value: "리다인" },
-              { name: "노 머시 (No Mercy)", value: "노 머시" },
-              { name: "세컨드 라이트 (Second Light)", value: "세컨드 라이트" },
-              { name: "댓 걸 (That Girl)", value: "댓 걸" },
-              { name: "바토리 (Bathory)", value: "바토리" },
-              { name: "미래소녀 (Future Girl)", value: "미래소녀" },
-            ),
+            .setName("query")
+            .setNameLocalization("ko", "곡명_또는_링크")
+            .setDescription("곡명, 아티스트, 또는 유튜브 URL (예: 아이유 밤편지, 뉴진스 Ditto)")
+            .setRequired(true),
         ),
     )
     .addSubcommand((sub) =>
@@ -248,9 +241,15 @@ export const slashCommands = [
     )
     .addSubcommand((sub) =>
       sub
+        .setName("now")
+        .setNameLocalization("ko", "현재곡")
+        .setDescription("현재 재생 중인 음악 정보를 확인합니다."),
+    )
+    .addSubcommand((sub) =>
+      sub
         .setName("list")
         .setNameLocalization("ko", "목록")
-        .setDescription("재생 가능한 음악 목록을 확인합니다."),
+        .setDescription("재생 가능한 로컬 음악 목록을 확인합니다."),
     ),
 
   new SlashCommandBuilder()
@@ -652,9 +651,9 @@ export const handleSlashCommand = async (
           embeds: [
             new EmbedBuilder()
               .setColor(0xff85a2)
-              .setTitle("🎵 재생 가능한 노래 목록")
-              .setDescription(listText)
-              .setFooter({ text: "재생: /music play title:<곡명>" }),
+              .setTitle("🎵 재생 가능한 로컬 노래 목록")
+              .setDescription(`${listText}\n\n*유튜브 곡은 \`/music play query:<곡명 또는 유튜브 링크>\`로 바로 재생할 수 있어요!*`)
+              .setFooter({ text: "재생: /music play query:<곡명/링크>" }),
           ],
         });
         return;
@@ -662,16 +661,53 @@ export const handleSlashCommand = async (
 
       if (sub === "stop") {
         if (!interaction.guildId) return;
+        stopGuildMusic(interaction.guildId);
+        if (sharedAudioPlayer) {
+          sharedAudioPlayer.stop();
+        }
         setGuildPlaybackMode(interaction.guildId, "idle");
         await interaction.editReply("⏹️ 음악 재생을 중지했습니다.");
         return;
       }
 
+      if (sub === "now") {
+        if (!interaction.guildId) return;
+        const currentSession = getGuildCurrentTrack(interaction.guildId);
+        if (!currentSession) {
+          await interaction.editReply("현재 재생 중인 음악이 없습니다.");
+          return;
+        }
+
+        const track = currentSession.track;
+        if (track.isLocal) {
+          await interaction.editReply(`🎶 현재 **${track.title}** (로컬 음원) 재생 중입니다.`);
+          return;
+        }
+
+        const embed = new EmbedBuilder()
+          .setColor(0xff0000)
+          .setTitle(`🎶 현재 재생 중: ${track.title}`)
+          .setURL(track.url)
+          .addFields(
+            { name: "채널", value: track.uploader || "YouTube", inline: true },
+            { name: "재생 시간", value: track.formattedDuration, inline: true },
+            { name: "신청자", value: currentSession.requesterName || "알 수 없음", inline: true },
+          );
+        if (track.thumbnail) {
+          embed.setThumbnail(track.thumbnail);
+        }
+        await interaction.editReply({ embeds: [embed] });
+        return;
+      }
+
       if (sub === "play") {
-        const title = interaction.options.getString("title", true);
-        const songPath = songMap[title];
-        if (!songPath) {
-          await interaction.editReply(`❌ \`${title}\` 곡을 찾을 수 없습니다. \`/music list\`를 확인해보세요.`);
+        const query =
+          interaction.options.getString("query") ||
+          interaction.options.getString("title") ||
+          "";
+
+        if (!query.trim()) {
+          await interaction.editReply("❌ 재생할 곡명이나 유튜브 링크를 입력해주세요.");
           return;
         }
 
@@ -682,23 +718,63 @@ export const handleSlashCommand = async (
           return;
         }
 
-        await interaction.editReply(`🎶 **${title}** 곡을 재생합니다!`);
-        // 백그라운드에서 음성 채널 연결 후 음악 재생
+        if (!sharedAudioPlayer) {
+          await interaction.editReply("❌ 오디오 플레이어가 초기화되지 않았습니다.");
+          return;
+        }
+
         try {
           const connection = await connectToVoiceChannel(voiceChannel);
-          if (sharedAudioPlayer) {
-            setupVoiceChatListener({
-              client: interaction.client,
-              connection,
-              voiceChannel,
-              textChannel: interaction.channel?.isSendable() ? interaction.channel : null,
-              player: sharedAudioPlayer,
-            });
-            // 재생 모드 전환
-            setGuildPlaybackMode(voiceChannel.guild.id, "music");
+          setupVoiceChatListener({
+            client: interaction.client,
+            connection,
+            voiceChannel,
+            textChannel: interaction.channel?.isSendable() ? interaction.channel : null,
+            player: sharedAudioPlayer,
+          });
+
+          // 음악 모드로 전환 및 탐색/재생 시작
+          setGuildPlaybackMode(voiceChannel.guild.id, "music");
+
+          const playResult = await playMusicTrack({
+            guildId: voiceChannel.guild.id,
+            query,
+            player: sharedAudioPlayer,
+            connection,
+            requesterName: userName,
+          });
+
+          if (!playResult.success || !playResult.track) {
+            setGuildPlaybackMode(voiceChannel.guild.id, "idle");
+            await interaction.editReply(
+              `❌ ${playResult.errorMessage || "음악을 재생할 수 없습니다."}`,
+            );
+            return;
+          }
+
+          const track = playResult.track;
+          if (track.isLocal) {
+            await interaction.editReply(`🎶 **${track.title}** 로컬 음원을 재생합니다!`);
+          } else {
+            const embed = new EmbedBuilder()
+              .setColor(0xff0000)
+              .setTitle(`🎵 ${track.title}`)
+              .setURL(track.url)
+              .setDescription("유튜브에서 곡을 찾아 재생을 시작합니다!")
+              .addFields(
+                { name: "채널", value: track.uploader || "YouTube", inline: true },
+                { name: "재생 시간", value: track.formattedDuration, inline: true },
+                { name: "신청자", value: userName, inline: true },
+              );
+            if (track.thumbnail) {
+              embed.setThumbnail(track.thumbnail);
+            }
+            await interaction.editReply({ embeds: [embed] });
           }
         } catch (e: any) {
           console.error("음악 재생 연결 실패:", e);
+          setGuildPlaybackMode(voiceChannel.guild.id, "idle");
+          await interaction.editReply("❌ 음악 재생 중 예기치 못한 오류가 발생했습니다.");
         }
         return;
       }
@@ -800,10 +876,11 @@ export const handleSlashCommand = async (
             ].join("\n"),
           },
           {
-            name: "🎵 음악 재생",
+            name: "🎵 음악 및 유튜브 재생",
             value: [
-              "`/music play [title]` 또는 `설아야 <곡명> 틀어줘` — 지정 곡 재생",
-              "`/music stop` — 음악 정지",
+              "`/music play <query>` 또는 `설아야 <곡명> 틀어줘` — 로컬 음원 또는 유튜브 노래 검색 재생",
+              "`/music now` — 현재 재생 중인 음악 정보 확인",
+              "`/music stop` 또는 `설아야 노래 꺼줘` — 음악 정지",
             ].join("\n"),
           },
         )

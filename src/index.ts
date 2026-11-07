@@ -122,7 +122,7 @@ discordClient.on("messageCreate", async (message) => {
 });
 
 // 3. 웹 대시보드 및 REST API 라우트 등록
-registerDashboardRoutes(app, getDashboardStatusSnapshot);
+registerDashboardRoutes(app, getDashboardStatusSnapshot, { player });
 
 const server = app.listen(CONFIG.PORT, () => {
   console.log(`[Web] Voice Dashboard running on ${CONFIG.DASHBOARD_URL}`);

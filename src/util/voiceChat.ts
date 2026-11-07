@@ -28,6 +28,7 @@ import type {
 } from "discord.js";
 import { generateAIResponse } from "./helper.ts";
 import { songMap } from "./songmap.ts";
+import { playMusicTrack, stopGuildMusic } from "./youtubeMusic.ts";
 import {
   recordVoiceTranscript,
   type ActiveVoiceSessionStatus,
@@ -335,6 +336,9 @@ export const setGuildPlaybackMode = (
   if (session) {
     session.playbackMode = mode;
   }
+  if (mode === "idle") {
+    stopGuildMusic(guildId);
+  }
 };
 
 /**
@@ -373,6 +377,7 @@ export const getActiveVoiceSessions = (): ActiveVoiceSessionStatus[] => {
  * 특정 길드의 음성 채널 퇴장 및 세션 리소스 완전히 해제
  */
 export const leaveVoiceChannel = (guildId: string): boolean => {
+  stopGuildMusic(guildId);
   const session = guildSessions.get(guildId);
   if (session) {
     try {
@@ -1028,9 +1033,15 @@ export const speakInVoiceChannel = async (
 };
 
 /**
- * 음성 명령으로 음악 재생 요청인지 판별
+ * 음성 명령으로 음악 재생 요청인지 판별 (로컬 곡명 또는 유튜브 검색어 반환)
  */
 const matchVoiceSongCommand = (text: string): string | null => {
+  const isPlayAction =
+    /(?:틀어\s*줘|재생해\s*줘|틀어|재생)\s*[.!?~]*$/i.test(text.trim());
+  if (!isPlayAction) {
+    return null;
+  }
+
   const normalized = text
     .replace(
       /^(?:설아야?|서라야?|설하야?|소라야?|사라야?|서로야?|저라야?|바라야?|바로야?|올아야?|수라야?|솔아야?)\s*/,
@@ -1039,22 +1050,12 @@ const matchVoiceSongCommand = (text: string): string | null => {
     .replace(/\s*(틀어\s*줘|재생해\s*줘|틀어|재생)\s*[.!?~]*$/, "")
     .trim();
 
-  if (!normalized || normalized === text.trim()) {
-    return null;
+  // "노래 틀어줘" / "음악 틀어줘" 처럼 곡명 없이 단독 요청인 경우 기본 대표곡 반환
+  if (!normalized || normalized === "노래" || normalized === "음악") {
+    return "아리아";
   }
 
-  if (songMap[normalized]) {
-    return normalized;
-  }
-
-  const compactInput = normalized.replace(/\s+/g, "").toLowerCase();
-  for (const key of Object.keys(songMap)) {
-    if (key.replace(/\s+/g, "").toLowerCase() === compactInput) {
-      return key;
-    }
-  }
-
-  return null;
+  return normalized;
 };
 
 /**
@@ -1143,10 +1144,11 @@ export const setupVoiceChatListener = (params: {
     cleanup: () => {},
   };
 
-  // 음악 재생 종료로 플레이어가 Idle로 돌아올 때 재생 모드 초기화 (TTS 모드는 문장 파이프라인 종료 시점에 해제)
+  // 음악 재생 종료로 플레이어가 Idle로 돌아올 때 재생 모드 초기화 및 스트림 정리
   const onPlayerIdle = () => {
     if (session.playbackMode === "music") {
       session.playbackMode = "idle";
+      stopGuildMusic(guildId);
     }
   };
   player.on(AudioPlayerStatus.Idle, onPlayerIdle);
@@ -1318,6 +1320,7 @@ export const setupVoiceChatListener = (params: {
             ) &&
             session.playbackMode === "music"
           ) {
+            stopGuildMusic(guildId);
             player.stop();
             session.playbackMode = "idle";
             await recordVoiceTranscript({
@@ -1338,35 +1341,42 @@ export const setupVoiceChatListener = (params: {
             return;
           }
 
-          // 3. 음성 명령: 노래 재생 ("<곡명> 틀어줘")
-          const matchedSongKey = matchVoiceSongCommand(transcribedText);
-          if (matchedSongKey) {
-            const songFileName = songMap[matchedSongKey];
-            if (songFileName) {
-              const targetPath = path.resolve(
-                process.cwd(),
-                "src",
-                "audio",
-                songFileName,
+          // 3. 음성 명령: 노래 재생 ("<곡명> 틀어줘" / "노래 틀어줘")
+          const songQuery = matchVoiceSongCommand(transcribedText);
+          if (songQuery) {
+            session.playbackMode = "music";
+            const playResult = await playMusicTrack({
+              guildId,
+              query: songQuery,
+              player,
+              connection,
+              requesterName: userName,
+            });
+
+            if (playResult.success && playResult.track) {
+              const replyText = playResult.track.isLocal
+                ? `${playResult.track.title} 틀어줄게!`
+                : `유튜브에서 ${playResult.track.title} 찾아 틀어줄게!`;
+
+              await recordVoiceTranscript({
+                guildName: voiceChannel.guild.name,
+                channelName: voiceChannel.name,
+                userName,
+                userText: transcribedText,
+                botReply: replyText,
+                actionType: "music_play",
+                durationSec,
+              });
+              return;
+            } else {
+              session.playbackMode = "idle";
+              await speakInVoiceChannel(
+                connection,
+                player,
+                guildId,
+                `미안, ${songQuery} 노래를 찾지 못했어.`,
               );
-              if (fs.existsSync(targetPath)) {
-                await recordVoiceTranscript({
-                  guildName: voiceChannel.guild.name,
-                  channelName: voiceChannel.name,
-                  userName,
-                  userText: transcribedText,
-                  botReply: `${matchedSongKey} 틀어줄게!`,
-                  actionType: "music_play",
-                  durationSec,
-                });
-                const resource = createAudioResource(targetPath, {
-                  inputType: StreamType.Arbitrary,
-                });
-                session.playbackMode = "music";
-                player.play(resource);
-                connection.subscribe(player);
-                return;
-              }
+              return;
             }
           }
 

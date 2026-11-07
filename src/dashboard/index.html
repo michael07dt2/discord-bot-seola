@@ -300,12 +300,13 @@
           </div>
         </div>
 
-        <!-- 음악 재생 제어 -->
+        <!-- 음악/유튜브 재생 제어 -->
         <div class="control-card">
-          <label>🎵 음악 재생 제어</label>
-          <div class="control-row">
-            <select id="songSelect">
-              <option value="아리아">아리아 (Aria)</option>
+          <label>🎵 음악 및 유튜브 재생 제어</label>
+          <div class="control-row" style="flex-wrap: wrap;">
+            <select id="songSelect" style="flex: 1; min-width: 140px;">
+              <option value="">직접 입력 (유튜브/검색어)</option>
+              <option value="아리아" selected>아리아 (Aria)</option>
               <option value="어웨이크">어웨이크 (Awake)</option>
               <option value="브레이크 더 체인">브레이크 더 체인</option>
               <option value="크레이지">크레이지 (Crazy)</option>
@@ -316,6 +317,7 @@
               <option value="바토리">바토리 (Bathory)</option>
               <option value="미래소녀">미래소녀 (Future Girl)</option>
             </select>
+            <input type="text" id="songCustomInput" placeholder="유튜브 곡명 또는 URL 입력..." style="flex: 1.5; min-width: 180px; padding: 7px 12px; background: rgba(0,0,0,0.3); border: 1px solid var(--border); border-radius: 8px; color: var(--text-primary); font-size: 13px;" />
             <button class="btn btn-primary" id="playMusicBtn">재생</button>
             <button class="btn btn-secondary" id="stopMusicBtn">정지</button>
           </div>
@@ -596,14 +598,37 @@
     });
 
     document.getElementById("playMusicBtn").addEventListener("click", async () => {
-      const songTitle = document.getElementById("songSelect").value;
+      const customInput = document.getElementById("songCustomInput").value.trim();
+      const selectVal = document.getElementById("songSelect").value;
+      const songTitle = customInput || selectVal;
+
+      if (!songTitle) {
+        return alert("재생할 곡명 또는 유튜브 링크를 입력해주세요!");
+      }
+
       const guildId = activeSessions[0]?.guildId;
       if (!guildId) return alert("먼저 디스코드 음성 채널에 봇을 입장시켜 주세요!");
-      await fetch("/api/control/music", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ guildId, action: "play", songTitle }),
-      });
+
+      const btn = document.getElementById("playMusicBtn");
+      btn.disabled = true;
+      btn.textContent = "탐색 중...";
+
+      try {
+        const res = await fetch("/api/control/music", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ guildId, action: "play", songTitle }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          alert(`재생 실패: ${data.error || "알 수 없는 오류"}`);
+        }
+      } catch (err) {
+        alert("음악 재생 요청 중 오류가 발생했습니다.");
+      } finally {
+        btn.disabled = false;
+        btn.textContent = "재생";
+      }
     });
 
     document.getElementById("stopMusicBtn").addEventListener("click", async () => {

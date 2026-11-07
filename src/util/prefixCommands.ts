@@ -28,6 +28,11 @@ import {
 } from "./helper.ts";
 import { songMap } from "./songmap.ts";
 import {
+  playMusicTrack,
+  stopGuildMusic,
+  getGuildCurrentTrack,
+} from "./youtubeMusic.ts";
+import {
   getBotStatusReport,
   getSelfImproveStatusReport,
   performWebSearch,
@@ -444,16 +449,55 @@ export const handlePrefixCommand = async (
     }
   }
 
+  // 음악 중지 프리픽스 명령
   if (
-    message.content.startsWith("설아야") &&
-    message.content.endsWith("틀어줘")
+    message.content === "설아야 노래 꺼" ||
+    message.content === "설아야 노래 꺼줘" ||
+    message.content === "설아야 노래 멈춰" ||
+    message.content === "설아야 노래 멈춰줘" ||
+    message.content === "설아야 음악 꺼" ||
+    message.content === "설아야 음악 멈춰" ||
+    message.content === "!stop" ||
+    message.content === "!정지"
   ) {
-    const userMessage = message.content
-      .replace("설아야", "")
-      .replace("틀어줘", "")
-      .trim();
-    if (!userMessage) {
-      await message.reply("재생할 음악 제목을 입력해주세요.");
+    const guildId = message.guild?.id;
+    if (guildId) {
+      stopGuildMusic(guildId);
+      player.stop();
+      setGuildPlaybackMode(guildId, "idle");
+      await message.reply("⏹️ 음악 재생을 중지했습니다.");
+      return;
+    }
+  }
+
+  // 음악/유튜브 재생 프리픽스 명령
+  const isPlayMusicPrefix =
+    (message.content.startsWith("설아야") &&
+      (message.content.endsWith("틀어줘") ||
+        message.content.endsWith("재생해줘") ||
+        message.content.endsWith("틀어") ||
+        message.content.endsWith("재생"))) ||
+    message.content.startsWith("!play ") ||
+    message.content.startsWith("!노래 ") ||
+    message.content.startsWith("!음악 ");
+
+  if (isPlayMusicPrefix) {
+    let userQuery = "";
+    if (message.content.startsWith("!play ")) {
+      userQuery = message.content.slice(6).trim();
+    } else if (message.content.startsWith("!노래 ")) {
+      userQuery = message.content.slice(4).trim();
+    } else if (message.content.startsWith("!음악 ")) {
+      userQuery = message.content.slice(4).trim();
+    } else {
+      userQuery = message.content
+        .replace(/^설아야?/, "")
+        .replace(/(?:틀어줘|재생해줘|틀어|재생)$/, "")
+        .trim();
+    }
+
+    if (!userQuery) {
+      await message.reply("재생할 음악 제목이나 유튜브 링크를 입력해주세요. 예: `설아야 뉴진스 디토 틀어줘` 또는 `!play 아이유 밤편지`");
       return;
     }
 
@@ -471,54 +515,41 @@ export const handlePrefixCommand = async (
       return;
     }
 
-    const songFileName = songMap[userMessage];
-    if (songFileName) {
-      try {
-        const targetPath = path.resolve(
-          process.cwd(),
-          "src",
-          "audio",
-          songFileName,
+    const loadingMsg = await message.reply(`🔍 \`${userQuery}\` 음원을 탐색 중입니다...`);
+
+    try {
+      setGuildPlaybackMode(voiceChannel.guild.id, "music");
+      const result = await playMusicTrack({
+        guildId: voiceChannel.guild.id,
+        query: userQuery,
+        player,
+        connection,
+        requesterName: message.member?.displayName || message.author.username,
+      });
+
+      if (!result.success || !result.track) {
+        setGuildPlaybackMode(voiceChannel.guild.id, "idle");
+        await loadingMsg.edit(
+          `❌ ${result.errorMessage || "음악을 재생할 수 없습니다."}`,
         );
-
-        if (!fs.existsSync(targetPath)) {
-          console.error("오류: 해당 경로에 파일이 없습니다 ->", targetPath);
-          await message.reply(
-            "서버에 오디오 파일이 존재하지 않습니다. 경로를 확인해주세요.",
-          );
-          return;
-        }
-
-        const resource = createAudioResource(targetPath, {
-          inputType: StreamType.Arbitrary,
-        });
-
-        setGuildPlaybackMode(voiceChannel.guild.id, "music");
-        player.play(resource);
-        connection.subscribe(player);
-
-        entersState(player, AudioPlayerStatus.Playing, 5_000)
-          .then(() =>
-            console.log("오디오 재생이 음성 채널에서 실제로 시작되었습니다."),
-          )
-          .catch((err) =>
-            console.error(
-              "플레이어가 5초 이내에 재생 상태로 진입하지 못함:",
-              err,
-            ),
-          );
-
-        await message.reply(`${userMessage} 재생 시작!`);
-        return;
-      } catch (error) {
-        console.error("오디오 리소스 생성 실패:", error);
-        await message.reply("오디오 파일을 읽어오는 중 오류가 발생했습니다.");
         return;
       }
-    }
 
-    await message.reply("해당 음악은 재생할 수 없습니다.");
-    return;
+      const track = result.track;
+      if (track.isLocal) {
+        await loadingMsg.edit(`🎶 **${track.title}** 로컬 음원을 재생합니다!`);
+      } else {
+        await loadingMsg.edit(
+          `🎵 **${track.title}**\n유튜브 재생 시작 (${track.formattedDuration}) | ${track.url}`,
+        );
+      }
+      return;
+    } catch (error: any) {
+      console.error("오디오 리소스 생성 실패:", error);
+      setGuildPlaybackMode(voiceChannel.guild.id, "idle");
+      await loadingMsg.edit("오디오를 재생하는 중 오류가 발생했습니다.");
+      return;
+    }
   }
 
   if (message.content.startsWith("설아야 꺼져")) {
