@@ -23,7 +23,11 @@
     "pm2:stop": "pm2 stop seola-bot",
     "pm2:restart": "pm2 restart seola-bot",
     "pm2:logs": "pm2 logs seola-bot",
-    "pm2:status": "pm2 status"
+    "pm2:status": "pm2 status",
+    "docker:build": "docker compose build",
+    "docker:up": "docker compose up -d",
+    "docker:down": "docker compose down",
+    "docker:logs": "docker compose logs -f"
   },
   "dependencies": {
     "@discordjs/opus": "^0.11.0",

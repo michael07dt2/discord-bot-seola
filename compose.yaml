@@ -11,3 +11,26 @@ services:
       - "15432:5432"
     volumes:
       - ./context_database:/var/lib/postgresql
+
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: seola-bot
+    restart: unless-stopped
+    depends_on:
+      - pg
+    ports:
+      - "${PORT:-13000}:13000"
+    env_file:
+      - .env
+    environment:
+      - NODE_ENV=production
+      # 도커 네트워크 내부의 pg 서비스(5432)로 직결 연결
+      - DATABASE_URL=postgresql://postgres:postgres@pg:5432/context
+      # 호스트 머신의 Ollama 엔드포인트 연결
+      - OLLAMA_BASE_URL=http://host.docker.internal:11434
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./src/audio:/app/src/audio

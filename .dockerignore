@@ -1,0 +1,11 @@
+node_modules
+npm-debug.log
+.git
+.gitignore
+.github
+.gemini
+.DS_Store
+.env.local
+.pm2
+Dockerfile*
+docker-compose*.yml
