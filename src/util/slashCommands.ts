@@ -47,6 +47,13 @@ import {
   speakInVoiceChannel,
   VOICE_PRESETS,
 } from "./voiceChat.ts";
+import { eq } from "drizzle-orm";
+import { db, contextsTable } from "../db/index.ts";
+import {
+  listUserMemories,
+  saveUserMemory,
+  deleteUserMemory,
+} from "./memoryRag.ts";
 import CONFIG from "../config/index.ts";
 import {
   notifyDashboardStatusChanged,
@@ -163,6 +170,19 @@ export const slashCommands = [
         .setName("status")
         .setNameLocalization("ko", "상태")
         .setDescription("현재 음성 통화 세션 상태를 확인합니다."),
+    )
+    .addSubcommand((sub) =>
+      sub
+        .setName("speak")
+        .setNameLocalization("ko", "발화")
+        .setDescription("음성 채널에 있는 설아가 지정한 문장을 TTS로 말하게 합니다.")
+        .addStringOption((opt) =>
+          opt
+            .setName("text")
+            .setNameLocalization("ko", "말할내용")
+            .setDescription("설아가 소리 내어 읽을 문장")
+            .setRequired(true),
+        ),
     ),
 
   new SlashCommandBuilder()
@@ -315,6 +335,66 @@ export const slashCommands = [
     .setName("status")
     .setNameLocalization("ko", "상태")
     .setDescription("봇 시스템 상태, 리소스, 음성 통화 상태를 확인합니다."),
+
+  new SlashCommandBuilder()
+    .setName("dashboard")
+    .setNameLocalization("ko", "대시보드")
+    .setDescription("실시간 음성 대화록 및 봇 상태 웹 대시보드 URL을 확인합니다."),
+
+  new SlashCommandBuilder()
+    .setName("clear")
+    .setNameLocalization("ko", "대화초기화")
+    .setDescription("설아와의 이전 대화 기록을 모두 비우고 새로운 대화를 시작합니다."),
+
+  new SlashCommandBuilder()
+    .setName("memory")
+    .setNameLocalization("ko", "기억")
+    .setDescription("설아가 기억하고 있는 사용자의 개인화 장기 기억(RAG)을 관리합니다.")
+    .addSubcommand((sub) =>
+      sub
+        .setName("list")
+        .setNameLocalization("ko", "목록")
+        .setDescription("설아가 기억하고 있는 내 선호/취향/정보 목록을 조회합니다."),
+    )
+    .addSubcommand((sub) =>
+      sub
+        .setName("add")
+        .setNameLocalization("ko", "추가")
+        .setDescription("설아에게 기억시킬 새로운 정보를 직접 추가합니다.")
+        .addStringOption((opt) =>
+          opt
+            .setName("content")
+            .setNameLocalization("ko", "내용")
+            .setDescription("기억할 정보 (예: 내 생일은 5월 12일이야, 초콜릿을 좋아해)")
+            .setRequired(true),
+        )
+        .addStringOption((opt) =>
+          opt
+            .setName("category")
+            .setNameLocalization("ko", "분류")
+            .setDescription("기억 카테고리")
+            .setRequired(false)
+            .addChoices(
+              { name: "일반/취향", value: "preference" },
+              { name: "신상/기념일", value: "profile" },
+              { name: "취미/여가", value: "hobby" },
+              { name: "음식/식습관", value: "food" },
+            ),
+        ),
+    )
+    .addSubcommand((sub) =>
+      sub
+        .setName("delete")
+        .setNameLocalization("ko", "삭제")
+        .setDescription("저장된 기억을 ID로 삭제합니다.")
+        .addIntegerOption((opt) =>
+          opt
+            .setName("id")
+            .setNameLocalization("ko", "기억번호")
+            .setDescription("삭제할 기억의 고유 번호 (ID)")
+            .setRequired(true),
+        ),
+    ),
 
   new SlashCommandBuilder()
     .setName("help")
@@ -546,6 +626,33 @@ export const handleSlashCommand = async (
               : "현재 이 서버의 음성 채널에 접속해 있지 않습니다. `/voice join`으로 불러보세요!",
           );
         await interaction.editReply({ embeds: [embed] });
+        return;
+      }
+
+      if (sub === "speak") {
+        const text = interaction.options.getString("text", true);
+        if (!interaction.guildId) return;
+
+        const connection = getVoiceConnection(interaction.guildId);
+        if (!connection || !sharedAudioPlayer) {
+          await interaction.editReply(
+            "❌ 설아가 현재 이 서버의 음성 채널에 연결되어 있지 않습니다. 먼저 `/voice join`으로 불러주세요!",
+          );
+          return;
+        }
+
+        try {
+          await speakInVoiceChannel(
+            connection,
+            sharedAudioPlayer,
+            interaction.guildId,
+            text,
+          );
+          await interaction.editReply(`🗣️ **${userName}**님의 요청으로 발화했습니다: "${text}"`);
+        } catch (err: any) {
+          console.error("[SlashCommands] voice speak 실패:", err);
+          await interaction.editReply("❌ 음성 발화 중 오류가 발생했습니다.");
+        }
         return;
       }
     }
@@ -833,7 +940,105 @@ export const handleSlashCommand = async (
       return;
     }
 
-    // 11. /help (도움말)
+    // 11. /dashboard (실시간 웹 대시보드)
+    if (commandName === "dashboard") {
+      const dashboardUrl = CONFIG.DASHBOARD_URL;
+      const embed = new EmbedBuilder()
+        .setColor(0x5865f2)
+        .setTitle("📊 설아 실시간 웹 대시보드")
+        .setDescription(
+          `음성 채널 실시간 대화록과 봇의 상태를 웹 브라우저에서 편리하게 확인하고 제어할 수 있습니다.\n\n👉 **[대시보드 바로가기](${dashboardUrl})**\n\`${dashboardUrl}\``,
+        )
+        .addFields(
+          {
+            name: "음성 통화 세션",
+            value: `${getActiveVoiceSessions().length}개 활성 중`,
+            inline: true,
+          },
+          {
+            name: "현재 목소리",
+            value: getCurrentVoicePreset().label,
+            inline: true,
+          },
+        );
+      await interaction.editReply({ embeds: [embed] });
+      return;
+    }
+
+    // 12. /clear (대화 기록 초기화)
+    if (commandName === "clear") {
+      try {
+        await db.delete(contextsTable).where(eq(contextsTable.name, userName));
+        await interaction.editReply(
+          `🧹 **${userName}**님과의 이전 대화 기록을 모두 깨끗이 비웠어요! 이제 새로운 기분으로 대화해요.`,
+        );
+      } catch (err: any) {
+        console.error("[SlashCommands] 대화 초기화 실패:", err);
+        await interaction.editReply("❌ 대화 기록을 초기화하는 중 오류가 발생했습니다.");
+      }
+      return;
+    }
+
+    // 13. /memory (개인화 장기 기억 RAG 관리)
+    if (commandName === "memory") {
+      const sub = interaction.options.getSubcommand();
+
+      if (sub === "list") {
+        const memories = await listUserMemories(userName);
+        if (memories.length === 0) {
+          await interaction.editReply(
+            `📝 아직 **${userName}**님에 대해 기억하고 있는 내용이 없어요.\n\`/memory add content:<내용>\`으로 설아에게 알려주시거나, 평소처럼 대화하시면 설아가 자동으로 기억해요!`,
+          );
+          return;
+        }
+
+        const lines = memories
+          .map(
+            (m) =>
+              `• **[#${m.id}]** \`${m.category}\` ${m.memory} *(중요도: ${m.importance})*`,
+          )
+          .join("\n");
+
+        const embed = new EmbedBuilder()
+          .setColor(0xff85a2)
+          .setTitle(`🧠 ${userName}님의 개인화 장기 기억 (${memories.length}개)`)
+          .setDescription(lines)
+          .setFooter({
+            text: "기억 삭제: /memory delete id:<기억번호> | 추가: /memory add",
+          });
+
+        await interaction.editReply({ embeds: [embed] });
+        return;
+      }
+
+      if (sub === "add") {
+        const content = interaction.options.getString("content", true);
+        const category = interaction.options.getString("category") || "preference";
+        await saveUserMemory({
+          userName,
+          memory: content,
+          category,
+          importance: 3,
+        });
+        await interaction.editReply(
+          `✨ **${userName}**님의 소중한 정보를 기억했어요!\n\n> \`${category}\` ${content}\n\n앞으로 대화할 때 잊지 않고 참고할게요!`,
+        );
+        return;
+      }
+
+      if (sub === "delete") {
+        const id = interaction.options.getInteger("id", true);
+        const deleted = await deleteUserMemory(id);
+        if (deleted) {
+          await interaction.editReply(`🗑️ 기억 **#${id}**번을 성공적으로 삭제했습니다.`);
+        } else {
+          await interaction.editReply(`❌ 기억 **#${id}**번을 찾을 수 없거나 삭제에 실패했습니다.`);
+        }
+        return;
+      }
+    }
+
+    // 14. /help (도움말)
     if (commandName === "help") {
       const currentPreset = getCurrentVoicePreset();
       const userPersona = await getUserPersona(userName);
@@ -850,10 +1055,18 @@ export const handleSlashCommand = async (
           {
             name: "💬 대화 및 페르소나 설정",
             value: [
-              "`/chat [message]` 또는 `설아야 <할 말>` — 설아와 텍스트 대화",
-              `\`/persona set\` 또는 \`!persona <이름>\` — 페르소나 변경 (현재: **${personaDef.name}**)`,
+              "`/persona set` 또는 `!persona <이름>` — 페르소나 변경 (현재: **${personaDef.name}**)",
               "페르소나 종류: `girlfriend`(여자친구), `assistant`(비서), `tsundere`(츤데레), `senior`(선배), `cute`(발랄), `custom`(사용자 정의)",
               "`/persona custom [prompt]` — 나만의 시스템 프롬프트 직접 지정",
+              "`/clear` — 이전 대화 내역 초기화",
+            ].join("\n"),
+          },
+          {
+            name: "🧠 개인화 장기 기억 (RAG)",
+            value: [
+              "`/memory list` — 설아가 기억하고 있는 내 정보/취향 목록",
+              "`/memory add content:<내용>` — 설아에게 새로운 정보 직접 기억시키기",
+              "`/memory delete id:<번호>` — 저장된 기억 삭제",
             ].join("\n"),
           },
           {
@@ -861,8 +1074,17 @@ export const handleSlashCommand = async (
             value: [
               "`/voice join` 또는 `설아야 이리온` — 음성 채널 입장 및 실시간 통화",
               "`/voice leave` 또는 `설아야 꺼져` — 음성 채널 퇴장",
-              `\`/preset [voice]\` 또는 \`!voice <이름>\` — 목소리 변경 (현재: **${currentPreset.label}**)`,
+              "`/voice speak text:<내용>` — 음성 채널에서 텍스트 TTS 발화",
+              "`/preset [voice]` 또는 `!voice <이름>` — 목소리 변경 (현재: **${currentPreset.label}**)",
               "지원 프리셋: `설아`(`seola`), `발랄`(`lively`), `차분`(`calm`), `속삭임`(`whisper`), `멜로`(`melo`), `아바`(`ava`), `선희`(`sunhi`)",
+            ].join("\n"),
+          },
+          {
+            name: "🎵 음악 및 유튜브 재생",
+            value: [
+              "`/music play <query>` 또는 `설아야 <곡명> 틀어줘` — 로컬 음원 또는 유튜브 노래 검색 재생",
+              "`/music now` — 현재 재생 중인 음악 정보 확인",
+              "`/music stop` 또는 `설아야 노래 꺼줘` — 음악 정지",
             ].join("\n"),
           },
           {
@@ -872,15 +1094,8 @@ export const handleSlashCommand = async (
               "`/search [query]` 또는 `!검색 <검색어>` — 실시간 웹/뉴스 검색",
               "`/improve run [instruction]` 또는 `!자기개선 <내용>` — Antigravity CLI(`agy`) 자율 코드 개선",
               "`/improve status` 또는 `!작업상태` — 자기개선 진행 상태 확인",
+              "`/dashboard` — 실시간 웹 대시보드 URL",
               "`/restart` / `/status` — 봇 재시작 및 상태 확인",
-            ].join("\n"),
-          },
-          {
-            name: "🎵 음악 및 유튜브 재생",
-            value: [
-              "`/music play <query>` 또는 `설아야 <곡명> 틀어줘` — 로컬 음원 또는 유튜브 노래 검색 재생",
-              "`/music now` — 현재 재생 중인 음악 정보 확인",
-              "`/music stop` 또는 `설아야 노래 꺼줘` — 음악 정지",
             ].join("\n"),
           },
         )

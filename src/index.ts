@@ -16,9 +16,11 @@ import { handlePrefixCommand } from "./util/prefixCommands.ts";
 import {
   getActiveVoiceSessions,
   getCurrentVoicePreset,
+  initVoicePresetFromDb,
   leaveAllVoiceChannels,
   preloadWhisperModel,
 } from "./util/voiceChat.ts";
+import { initPersonaFromDb } from "./util/persona.ts";
 import {
   registerDashboardRoutes,
   type DashboardStatusSnapshot,
@@ -90,6 +92,11 @@ setSlashCommandDependencies({
 // 봇 준비 완료 이벤트
 discordClient.once(Events.ClientReady, async (readyClient) => {
   console.log(`[Discord] Logged in as ${readyClient.user.tag}`);
+  // 재부팅 이전 영구 저장된 목소리 프리셋 및 페르소나 복원
+  await Promise.all([
+    initVoicePresetFromDb().catch(() => {}),
+    initPersonaFromDb().catch(() => {}),
+  ]);
   // Whisper STT 로컬 가중치 사전 로드 (최초 음성 인식 지연 방지)
   preloadWhisperModel().catch(() => {});
   // 디스코드 슬래시(/) 명령어 자동 동기화 등록

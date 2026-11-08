@@ -69,4 +69,13 @@ export const userMemoriesTable = pgTable("user_memories", {
     .notNull(),
 });
 
+// 봇 시스템 전역 설정(목소리 프리셋, 기본 페르소나 등)을 영구 저장하는 테이블
+export const botSettingsTable = pgTable("bot_settings", {
+  key: varchar("key", { length: 128 }).primaryKey(),
+  value: text("value").notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .defaultNow()
+    .notNull(),
+});
+
 

@@ -29,6 +29,7 @@ import type {
 import { generateAIResponse } from "./helper.ts";
 import { songMap } from "./songmap.ts";
 import { playMusicTrack, stopGuildMusic } from "./youtubeMusic.ts";
+import { getBotSetting, setBotSetting } from "./settings.ts";
 import {
   recordVoiceTranscript,
   type ActiveVoiceSessionStatus,
@@ -180,7 +181,28 @@ export const getCurrentVoicePreset = (): VoicePreset => {
   return VOICE_PRESETS[currentVoicePresetKey] ?? VOICE_PRESETS["seola"]!;
 };
 
-export const setVoicePreset = (input: string): VoicePreset | null => {
+/**
+ * DB에서 마지막으로 저장된 목소리 프리셋을 로드하여 복원 (재부팅 유지)
+ */
+export const initVoicePresetFromDb = async (): Promise<VoicePreset> => {
+  try {
+    const saved = await getBotSetting("voice_preset");
+    if (saved && VOICE_PRESETS[saved]) {
+      currentVoicePresetKey = saved;
+      console.log(
+        `[VoiceChat] 💾 재부팅 이전 저장된 목소리 복원 완료: ${VOICE_PRESETS[saved].label} (${saved})`,
+      );
+    }
+  } catch (err) {
+    console.warn("[VoiceChat] 목소리 설정 복원 실패 (기본값 유지):", err);
+  }
+  return getCurrentVoicePreset();
+};
+
+export const setVoicePreset = (
+  input: string,
+  options?: { persist?: boolean },
+): VoicePreset | null => {
   const key = input.trim().toLowerCase();
   const aliasMap: Record<string, string> = {
     설아: "seola",
@@ -210,6 +232,14 @@ export const setVoicePreset = (input: string): VoicePreset | null => {
   }
 
   currentVoicePresetKey = resolvedKey;
+
+  // DB에 영구 저장 (재부팅 후에도 유지되도록 보장)
+  if (options?.persist !== false) {
+    setBotSetting("voice_preset", resolvedKey).catch((err) => {
+      console.warn("[VoiceChat] 목소리 설정 영구 저장 실패:", err);
+    });
+  }
+
   return VOICE_PRESETS[resolvedKey]!;
 };
 

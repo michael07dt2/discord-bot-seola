@@ -1,5 +1,6 @@
 import { eq, sql } from "drizzle-orm";
 import { db, userPersonasTable } from "../db/index.ts";
+import { getBotSetting, setBotSetting } from "./settings.ts";
 
 export type PersonaId =
   | "girlfriend"
@@ -248,7 +249,28 @@ export const ensureUserPersonasTable = async () => {
   }
 };
 
-// 사용자별 현재 페르소나 조회 (기본값: girlfriend)
+// 전역 기본 페르소나 (기본값: girlfriend)
+let globalDefaultPersonaId: PersonaId = "girlfriend";
+
+/**
+ * DB에서 마지막으로 저장된 전역 기본 페르소나 복원 (재부팅 유지)
+ */
+export const initPersonaFromDb = async (): Promise<PersonaId> => {
+  try {
+    const saved = await getBotSetting("default_persona");
+    if (saved && saved in PERSONA_DEFINITIONS) {
+      globalDefaultPersonaId = saved as PersonaId;
+      console.log(
+        `[Persona] 💾 재부팅 이전 저장된 기본 페르소나 복원 완료: ${PERSONA_DEFINITIONS[globalDefaultPersonaId].name} (${globalDefaultPersonaId})`,
+      );
+    }
+  } catch (err) {
+    console.warn("[Persona] 기본 페르소나 설정 복원 실패 (기본값 유지):", err);
+  }
+  return globalDefaultPersonaId;
+};
+
+// 사용자별 현재 페르소나 조회 (기본값: 전역 기본 페르소나)
 export const getUserPersona = async (
   userName: string,
 ): Promise<{ personaId: PersonaId; customPrompt?: string | undefined }> => {
@@ -278,7 +300,7 @@ export const getUserPersona = async (
   }
 
   const defaultPersona: { personaId: PersonaId; customPrompt?: string | undefined } = {
-    personaId: "girlfriend" as PersonaId,
+    personaId: globalDefaultPersonaId,
   };
   userPersonaCache.set(userName, defaultPersona);
   return defaultPersona;
@@ -296,7 +318,9 @@ export const setUserPersona = async (
   }
 
   userPersonaCache.set(userName, { personaId, customPrompt });
+  globalDefaultPersonaId = personaId;
 
+  // DB에 유저별 페르소나 및 시스템 전역 기본 페르소나 동시 영구 저장 (재부팅 후에도 유지)
   try {
     await ensureUserPersonasTable();
     await db
@@ -315,6 +339,9 @@ export const setUserPersona = async (
           updatedAt: new Date(),
         },
       });
+
+    // 봇 전역 기본 페르소나로도 저장
+    await setBotSetting("default_persona", personaId);
   } catch (error) {
     console.error("사용자 페르소나 DB 저장 중 오류:", error);
   }
