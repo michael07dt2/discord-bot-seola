@@ -522,6 +522,63 @@ const streamCompletionWithSentences = async (
   return finalReply;
 };
 
+/**
+ * Ollama 네이티브 /api/chat 엔드포인트를 호출하여 추론 토큰(Thinking) 없이 신속하게 답변 생성
+ */
+const fetchOllamaChat = async (params: {
+  model: string;
+  messages: ChatCompletionMessageParam[];
+  maxTokens?: number;
+  disableThinking?: boolean;
+}): Promise<string | null> => {
+  const isOllama =
+    CONFIG.OLLAMA_BASE_URL.includes("11434") ||
+    CONFIG.OLLAMA_BASE_URL.includes("ollama");
+  if (!isOllama) {
+    return null;
+  }
+
+  const ollamaMessages = params.messages.map((m) => ({
+    role: m.role === "developer" ? "system" : m.role,
+    content:
+      typeof m.content === "string" ? m.content : JSON.stringify(m.content),
+  }));
+
+  try {
+    const t0 = Date.now();
+    const res = await fetch(`${CONFIG.OLLAMA_BASE_URL}/api/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: params.model,
+        messages: ollamaMessages,
+        stream: false,
+        think: params.disableThinking === false ? true : false,
+        options: {
+          num_predict: params.maxTokens || 512,
+        },
+      }),
+      signal: AbortSignal.timeout(35_000),
+    });
+
+    if (!res.ok) {
+      console.warn(`[Ollama] /api/chat 오류 (${res.status}):`, await res.text());
+      return null;
+    }
+
+    const data: any = await res.json();
+    let content = data?.message?.content || "";
+    content = content.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
+    console.log(
+      `[Ollama] ⚡ /api/chat 응답 생성 완료 (${Date.now() - t0}ms, 길이: ${content.length}자)`,
+    );
+    return content || null;
+  } catch (err: any) {
+    console.warn("[Ollama] /api/chat 호출 실패, OpenAI 어댑터로 폴백:", err?.message || err);
+    return null;
+  }
+};
+
 export const generateAIResponse = async (
   userName: string,
   rawMessage: string,
@@ -724,11 +781,20 @@ export const generateAIResponse = async (
           : undefined,
       );
     } else {
-      const completion = await openAiClient.chat.completions.create({
+      responseContent = await fetchOllamaChat({
         model: selectedModel,
         messages: toolMessages,
+        maxTokens: 512,
+        disableThinking: true,
       });
-      responseContent = completion.choices[0]?.message.content;
+
+      if (!responseContent) {
+        const completion = await openAiClient.chat.completions.create({
+          model: selectedModel,
+          messages: toolMessages,
+        });
+        responseContent = completion.choices[0]?.message.content;
+      }
     }
   } else if (options?.onSentence) {
     // 실시간 음성 통화 모드: 첫 문장이 생성되는 즉시 TTS 파이프라인으로 스트리밍 전달하여 응답 지연 최소화 (짧은 대답 유지를 위해 80 토큰 제한 및 추론(Thinking) 비활성화)
@@ -741,52 +807,62 @@ export const generateAIResponse = async (
         : undefined,
     );
   } else {
-    // 일반 대화 중 LLM이 자율적으로 도구(web_search 등) 호출 여부를 판단하도록 Function Calling 시도
-    try {
-      const completion = await openAiClient.chat.completions.create({
-        model: selectedModel,
-        messages: baseMessages,
-        tools: SEOLA_TOOLS,
-        tool_choice: "auto",
-      });
+    // 1순위: Ollama 네이티브 /api/chat (think: false로 2초대 초고속 생성 및 Thinking 토큰 잠식 원천 방지)
+    responseContent = await fetchOllamaChat({
+      model: selectedModel,
+      messages: baseMessages,
+      maxTokens: 512,
+      disableThinking: true,
+    });
 
-      const choiceMessage = completion.choices[0]?.message;
-      if (choiceMessage?.tool_calls && choiceMessage.tool_calls.length > 0) {
-        const followupMessages: ChatCompletionMessageParam[] = [
-          ...baseMessages,
-          choiceMessage,
-        ];
-
-        for (const toolCall of choiceMessage.tool_calls) {
-          if (toolCall.type === "function") {
-            const output = await executeSeolaTool(
-              toolCall.function.name,
-              toolCall.function.arguments,
-              toolContext,
-            );
-            followupMessages.push({
-              role: "tool",
-              tool_call_id: toolCall.id,
-              content: output,
-            });
-          }
-        }
-
-        const secondCompletion = await openAiClient.chat.completions.create({
+    // 2순위: 네이티브 실패 또는 비-Ollama 환경 시 OpenAI 호환 클라이언트로 폴백
+    if (!responseContent) {
+      try {
+        const completion = await openAiClient.chat.completions.create({
           model: selectedModel,
-          messages: followupMessages,
+          messages: baseMessages,
+          tools: SEOLA_TOOLS,
+          tool_choice: "auto",
         });
-        responseContent = secondCompletion.choices[0]?.message.content;
-      } else {
-        responseContent = choiceMessage?.content;
+
+        const choiceMessage = completion.choices[0]?.message;
+        if (choiceMessage?.tool_calls && choiceMessage.tool_calls.length > 0) {
+          const followupMessages: ChatCompletionMessageParam[] = [
+            ...baseMessages,
+            choiceMessage,
+          ];
+
+          for (const toolCall of choiceMessage.tool_calls) {
+            if (toolCall.type === "function") {
+              const output = await executeSeolaTool(
+                toolCall.function.name,
+                toolCall.function.arguments,
+                toolContext,
+              );
+              followupMessages.push({
+                role: "tool",
+                tool_call_id: toolCall.id,
+                content: output,
+              });
+            }
+          }
+
+          const secondCompletion = await openAiClient.chat.completions.create({
+            model: selectedModel,
+            messages: followupMessages,
+          });
+          responseContent = secondCompletion.choices[0]?.message.content;
+        } else {
+          responseContent = choiceMessage?.content;
+        }
+      } catch {
+        // 선택한 로컬 모델이 OpenAI tools 파라미터를 지원하지 않는 경우 일반 완성으로 자동 폴백
+        const fallbackCompletion = await openAiClient.chat.completions.create({
+          model: selectedModel,
+          messages: baseMessages,
+        });
+        responseContent = fallbackCompletion.choices[0]?.message.content;
       }
-    } catch {
-      // 선택한 로컬 모델이 OpenAI tools 파라미터를 지원하지 않는 경우 일반 완성으로 자동 폴백
-      const fallbackCompletion = await openAiClient.chat.completions.create({
-        model: selectedModel,
-        messages: baseMessages,
-      });
-      responseContent = fallbackCompletion.choices[0]?.message.content;
     }
   }
 
@@ -834,6 +910,11 @@ export const chatAI = async (
     return;
   }
 
+  // 사용자에게 디스코드 "설아가 입력하고 있어요..." 타이핑 표시
+  try {
+    await message.channel.sendTyping();
+  } catch {}
+
   try {
     const responseContent = await generateAIResponse(userName, userMessage, {
       channel: message.channel.isSendable() ? message.channel : null,
@@ -841,6 +922,7 @@ export const chatAI = async (
     if (responseContent) {
       await message.reply(responseContent);
     } else {
+      console.warn(`[chatAI] ⚠️ generateAIResponse 반환값이 비어있음 (user: ${userName})`);
       await message.reply("응답을 생성하지 못했습니다.");
     }
   } catch (error) {
