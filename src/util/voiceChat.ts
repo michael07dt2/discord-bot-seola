@@ -933,6 +933,7 @@ export const synthesizeSpeechResource = async (
             mode: preset.cosyMode || CONFIG.COSYVOICE_MODE,
             promptText: CONFIG.COSYVOICE_PROMPT_TEXT,
             promptWavPath: CONFIG.COSYVOICE_PROMPT_WAV,
+            instructText: CONFIG.COSYVOICE_INSTRUCT_TEXT,
           });
           if (cosyResult) {
             return {

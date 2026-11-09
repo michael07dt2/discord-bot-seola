@@ -44,6 +44,7 @@ export const CONFIG = {
     process.env.COSYVOICE_PROMPT_TEXT || "希望你以后能够做的比我还好呦。",
   COSYVOICE_PROMPT_WAV:
     process.env.COSYVOICE_PROMPT_WAV || "asset/zero_shot_prompt.wav",
+  COSYVOICE_INSTRUCT_TEXT: process.env.COSYVOICE_INSTRUCT_TEXT || "",
   COSYVOICE_TIMEOUT_MS: parseInt(
     process.env.COSYVOICE_TIMEOUT_MS || "180000",
     10,

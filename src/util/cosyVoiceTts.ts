@@ -73,7 +73,8 @@ export const synthesizeCosyVoiceSentence = async (
     promptText = `You are a helpful assistant.<|endofprompt|>${promptText}`;
   }
   const promptWavPath = options?.promptWavPath || CONFIG.COSYVOICE_PROMPT_WAV;
-  const instructText = options?.instructText || "";
+  const instructText =
+    options?.instructText || CONFIG.COSYVOICE_INSTRUCT_TEXT || "";
   const sftSpeaker = options?.sftSpeaker || "(사전 학습 음색 없음)";
   const speed = options?.speed ?? 1.0;
   const seed = options?.seed ?? 0;
@@ -84,8 +85,11 @@ export const synthesizeCosyVoiceSentence = async (
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
   const displayExcerpt = text.length > 25 ? `${text.slice(0, 25)}...` : text;
+  const instructExcerpt = instructText
+    ? ` [지시: "${instructText.length > 15 ? instructText.slice(0, 15) + "..." : instructText}"]`
+    : "";
   console.log(
-    `[CosyVoice] 🎙️ 음성 합성 시작: "${displayExcerpt}" (모드: ${mode}, 제한시간: ${timeoutMs / 1000}초)`,
+    `[CosyVoice] 🎙️ 음성 합성 시작: "${displayExcerpt}" (모드: ${mode}${instructExcerpt}, 제한시간: ${timeoutMs / 1000}초)`,
   );
 
   try {
