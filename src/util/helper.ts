@@ -699,7 +699,7 @@ export const generateAIResponse = async (
   const voiceConstraint = options?.isVoiceMode
     ? `\n\n# Voice Call Mode (실시간 음성 통화 모드 - 최우선 절대 규칙)
 - 현재 텍스트 메신저가 아니라 디스코드 음성 채널에서 실시간 목소리로 통화 중이다.
-- [답변 길이 엄격 제한]: 답변은 반드시 1문장(최대 2문장), 공백 포함 40자 이내로 매우 짧고 간결하게 대답한다.
+- [자연스러운 대화 완성]: 문장이 도중에 어색하게 끊기지 않도록 온전한 문장 형태로 완성해서 끝맺는다.
 - [추론(Thinking) 및 독백 금지]: <think> 태그나 내부 추론/생각 과정을 절대로 출력하지 말고, 생각 과정 없이 즉시 말할 최종 대사만 바로 출력한다.
 - [괄호/지문/행동묘사 절대 금지]: TTS(음성 합성 엔진)가 그대로 소리 내어 읽으므로, 어조 지문, 표정 지문, 행동 묘사, 괄호 표현(예: (웃으며), (다정하게), **(목소리로 대답한다)**, [미소], *미소*)을 단 한 글자도 출력하지 마라.
 - 'ㅋㅋ', 'ㅎㅎ', 'ㅠㅠ', 'ㅜㅜ', 이모티콘, 마크다운 기호를 절대 쓰지 말고, 실제로 입으로 발음하여 소리 낼 한국어 대사만 바로 출력한다.${multiPersonConstraint}`
@@ -777,7 +777,7 @@ export const generateAIResponse = async (
         toolMessages,
         options.onSentence,
         options?.isVoiceMode
-          ? { maxTokens: 80, disableThinking: true }
+          ? { maxTokens: 512, disableThinking: true }
           : undefined,
       );
     } else {
@@ -797,13 +797,13 @@ export const generateAIResponse = async (
       }
     }
   } else if (options?.onSentence) {
-    // 실시간 음성 통화 모드: 첫 문장이 생성되는 즉시 TTS 파이프라인으로 스트리밍 전달하여 응답 지연 최소화 (짧은 대답 유지를 위해 80 토큰 제한 및 추론(Thinking) 비활성화)
+    // 실시간 음성 통화 모드: 첫 문장이 생성되는 즉시 TTS 파이프라인으로 스트리밍 전달하여 응답 지연 최소화 (답변이 끊기지 않도록 512 토큰 제공 및 추론(Thinking) 비활성화)
     responseContent = await streamCompletionWithSentences(
       selectedModel,
       baseMessages,
       options.onSentence,
       options?.isVoiceMode
-        ? { maxTokens: 80, disableThinking: true }
+        ? { maxTokens: 512, disableThinking: true }
         : undefined,
     );
   } else {

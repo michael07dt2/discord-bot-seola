@@ -1045,7 +1045,8 @@ export const createSentenceSpeechPipeline = (
   options?: { maxSentences?: number },
 ) => {
   const synthesisQueue: Promise<SynthesizedSpeechResource | null>[] = [];
-  const maxSentences = options?.maxSentences ?? 2;
+  // 답변 받은 문장을 도중에 자르지 않고 온전히 모두 발화하도록 기본값을 무제한(Infinity)으로 설정
+  const maxSentences = options?.maxSentences ?? Infinity;
   let enqueuedSentenceCount = 0;
   let isFinished = false;
   let wakeConsumer: (() => void) | null = null;
