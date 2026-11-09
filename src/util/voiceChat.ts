@@ -80,11 +80,12 @@ export interface VoicePreset {
 export const VOICE_PRESETS: Record<string, VoicePreset> = {
   cosy: {
     id: "cosy",
-    label: "코지 (CosyVoice 3 신경망 음성)",
-    description: "상위 디렉터리 CosyVoice 대규모 음성 생성 모델 기반 고음질 보이스",
+    label: "코지 (CosyVoice 음성 복제)",
+    description: "환경 변수(.env)에 지정된 프롬프트 음성 기반 고음질 보이스",
     engine: "cosyvoice",
     cosySpeed: 1.0,
-    voiceName: "ko-KR-SunHiNeural",
+    cosyMode: CONFIG.COSYVOICE_MODE,
+    voiceName: "cosy-custom",
     voiceLocale: "ko-KR",
     pitch: "+0Hz",
     rate: "+0%",
@@ -188,38 +189,86 @@ export const VOICE_PRESETS: Record<string, VoicePreset> = {
   },
 };
 
-// 현재 선택된 목소리 프리셋 (기본값: 한국어 억양이 가장 자연스러운 MeloTTS-Korean 기반 'seola')
+// 목소리 프리셋 로컬 캐시 파일 (DB 장애 또는 초기 기동 시 이중 보존용)
+const VOICE_CACHE_FILE = path.resolve(process.cwd(), ".voice_preset");
+
+// 로컬 캐시 파일에서 저장된 프리셋 키 안전하게 읽기
+const readCachedVoicePreset = (): string | null => {
+  try {
+    if (fs.existsSync(VOICE_CACHE_FILE)) {
+      const cached = fs.readFileSync(VOICE_CACHE_FILE, "utf-8").trim();
+      if (cached && VOICE_PRESETS[cached]) {
+        return cached;
+      }
+    }
+  } catch (err) {
+    console.warn("[VoiceChat] 로컬 목소리 캐시 읽기 실패:", err);
+  }
+  return null;
+};
+
+// 로컬 캐시 파일에 프리셋 키 안전하게 저장
+const writeCachedVoicePreset = (key: string): void => {
+  try {
+    fs.writeFileSync(VOICE_CACHE_FILE, key, "utf-8");
+  } catch (err) {
+    console.warn("[VoiceChat] 로컬 목소리 캐시 쓰기 실패:", err);
+  }
+};
+
+// 현재 선택된 목소리 프리셋 (기본 우선순위: 1. 로컬 캐시 파일 -> 2. .env TTS_PRESET -> 3. 'seola')
 let currentVoicePresetKey: string =
-  CONFIG.TTS_PRESET && VOICE_PRESETS[CONFIG.TTS_PRESET]
+  readCachedVoicePreset() ||
+  (CONFIG.TTS_PRESET && VOICE_PRESETS[CONFIG.TTS_PRESET]
     ? CONFIG.TTS_PRESET
-    : "seola";
+    : "seola");
 
 export const getCurrentVoicePreset = (): VoicePreset => {
   return VOICE_PRESETS[currentVoicePresetKey] ?? VOICE_PRESETS["seola"]!;
 };
 
 /**
- * DB에서 마지막으로 저장된 목소리 프리셋을 로드하여 복원 (재부팅 유지)
+ * DB 또는 로컬 캐시에서 마지막으로 저장된 목소리 프리셋을 로드하여 복원 (재부팅 유지)
  */
 export const initVoicePresetFromDb = async (): Promise<VoicePreset> => {
   try {
+    // 1차: DB(bot_settings) 조회
     const saved = await getBotSetting("voice_preset");
     if (saved && VOICE_PRESETS[saved]) {
       currentVoicePresetKey = saved;
+      writeCachedVoicePreset(saved);
       console.log(
-        `[VoiceChat] 💾 재부팅 이전 저장된 목소리 복원 완료: ${VOICE_PRESETS[saved].label} (${saved})`,
+        `[VoiceChat] 💾 재부팅 이전 DB 저장된 목소리 복원 완료: ${VOICE_PRESETS[saved].label} (${saved})`,
       );
+      return getCurrentVoicePreset();
     }
   } catch (err) {
-    console.warn("[VoiceChat] 목소리 설정 복원 실패 (기본값 유지):", err);
+    console.warn("[VoiceChat] DB 목소리 설정 복원 실패 (로컬 캐시 확인 중):", err);
   }
+
+  // 2차: 로컬 캐시 파일 확인
+  const cached = readCachedVoicePreset();
+  if (cached && VOICE_PRESETS[cached]) {
+    currentVoicePresetKey = cached;
+    console.log(
+      `[VoiceChat] 💾 로컬 캐시에서 목소리 복원 완료: ${VOICE_PRESETS[cached].label} (${cached})`,
+    );
+    return getCurrentVoicePreset();
+  }
+
+  // 3차: 환경 변수(.env) TTS_PRESET 또는 기본값 유지
+  if (CONFIG.TTS_PRESET && VOICE_PRESETS[CONFIG.TTS_PRESET]) {
+    currentVoicePresetKey = CONFIG.TTS_PRESET;
+    writeCachedVoicePreset(CONFIG.TTS_PRESET);
+  }
+
   return getCurrentVoicePreset();
 };
 
-export const setVoicePreset = (
+export const setVoicePreset = async (
   input: string,
   options?: { persist?: boolean },
-): VoicePreset | null => {
+): Promise<VoicePreset | null> => {
   const key = input.trim().toLowerCase();
   const aliasMap: Record<string, string> = {
     설아: "seola",
@@ -254,11 +303,14 @@ export const setVoicePreset = (
 
   currentVoicePresetKey = resolvedKey;
 
-  // DB에 영구 저장 (재부팅 후에도 유지되도록 보장)
+  // DB 및 로컬 캐시 파일에 영구 저장 (재부팅 후에도 100% 유지되도록 이중 보장)
   if (options?.persist !== false) {
-    setBotSetting("voice_preset", resolvedKey).catch((err) => {
-      console.warn("[VoiceChat] 목소리 설정 영구 저장 실패:", err);
-    });
+    writeCachedVoicePreset(resolvedKey);
+    try {
+      await setBotSetting("voice_preset", resolvedKey);
+    } catch (err) {
+      console.warn("[VoiceChat] 목소리 설정 DB 저장 실패 (로컬 캐시에는 보존됨):", err);
+    }
   }
 
   return VOICE_PRESETS[resolvedKey]!;
@@ -866,12 +918,14 @@ export const synthesizeSpeechResource = async (
       const isAvailable = await isCosyVoiceAvailable();
       if (!isAvailable) {
         console.warn(
-          "[VoiceChat] CosyVoice 서버가 응답하지 않아 MeloTTS로 폴백합니다.",
+          `[VoiceChat] CosyVoice 서버(${CONFIG.COSYVOICE_API_URL})가 응답하지 않아 MeloTTS로 폴백합니다.`,
         );
       } else {
         const cosyResult = await synthesizeCosyVoiceSentence(speakableText, {
           speed: preset.cosySpeed ?? 1.0,
-          mode: preset.cosyMode,
+          mode: preset.cosyMode || CONFIG.COSYVOICE_MODE,
+          promptText: CONFIG.COSYVOICE_PROMPT_TEXT,
+          promptWavPath: CONFIG.COSYVOICE_PROMPT_WAV,
         });
         if (cosyResult) {
           return {

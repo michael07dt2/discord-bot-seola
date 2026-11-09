@@ -8,5 +8,6 @@ models/
 :memory:.ses
 *.pid
 .seola-bot.pid
+.voice_preset
 
 

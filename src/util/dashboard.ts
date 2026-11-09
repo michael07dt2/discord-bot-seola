@@ -375,14 +375,14 @@ export const registerDashboardRoutes = (
   });
 
   // 7. 실시간 제어 API: 목소리 프리셋 변경
-  app.post("/api/control/voice-preset", (req: Request, res: Response) => {
+  app.post("/api/control/voice-preset", async (req: Request, res: Response) => {
     const { presetId } = req.body || {};
     if (!presetId) {
       res.status(400).json({ error: "presetId가 필요합니다." });
       return;
     }
 
-    const updated = setVoicePreset(presetId);
+    const updated = await setVoicePreset(presetId);
     if (!updated) {
       res.status(400).json({ error: "유효하지 않은 목소리 프리셋입니다." });
       return;

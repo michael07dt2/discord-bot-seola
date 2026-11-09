@@ -30,6 +30,8 @@ services:
       - DATABASE_URL=postgresql://postgres:postgres@pg:5432/context
       # 호스트 머신의 Ollama 엔드포인트 연결
       - OLLAMA_BASE_URL=http://host.docker.internal:11434
+      # 호스트 머신의 CosyVoice Gradio 5.x WebUI 엔드포인트 연결
+      - COSYVOICE_API_URL=http://host.docker.internal:8000
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:

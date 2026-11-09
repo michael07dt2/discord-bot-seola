@@ -354,7 +354,7 @@ export const handlePrefixCommand = async (
       return;
     }
 
-    const updated = setVoicePreset(targetVoice);
+    const updated = await setVoicePreset(targetVoice);
     if (!updated) {
       const availableKeys = Object.keys(VOICE_PRESETS)
         .map((k) => `\`${k}\``)

@@ -681,7 +681,7 @@ export const handleSlashCommand = async (
         return;
       }
 
-      const updated = setVoicePreset(selected);
+      const updated = await setVoicePreset(selected);
       if (!updated) {
         await interaction.editReply(`❌ \`${selected}\` 목소리 프리셋을 찾을 수 없습니다.`);
         return;
