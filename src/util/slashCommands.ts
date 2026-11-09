@@ -203,6 +203,7 @@ export const slashCommands = [
           { name: "🎙️ 멜로 (중립 원음 기준)", value: "melo" },
           { name: "💎 아바 (Edge 다국어 음성 Ava)", value: "ava" },
           { name: "🎀 선희 (Edge 한국어 음성 SunHi)", value: "sunhi" },
+          { name: "🔮 코지 (CosyVoice 3 신경망 음성)", value: "cosy" },
         ),
     ),
 

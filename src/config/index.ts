@@ -31,6 +31,20 @@ export const CONFIG = {
     process.env.WHISPER_MODEL || "onnx-community/whisper-small",
   TTS_PRESET: process.env.TTS_PRESET || "seola",
 
+  // CosyVoice TTS 백엔드 설정 (상위 폴더 CosyVoice Gradio 5.x WebUI 연동)
+  COSYVOICE_API_URL: (
+    process.env.COSYVOICE_API_URL || "http://127.0.0.1:8000"
+  ).replace(/\/+$/, ""),
+  COSYVOICE_MODE: (process.env.COSYVOICE_MODE || "3초 음성 복제") as
+    | "3초 음성 복제"
+    | "교차 언어 복제"
+    | "자연어 지시 제어"
+    | "사전 학습 음색",
+  COSYVOICE_PROMPT_TEXT:
+    process.env.COSYVOICE_PROMPT_TEXT || "希望你以后能够做的比我还好呦。",
+  COSYVOICE_PROMPT_WAV:
+    process.env.COSYVOICE_PROMPT_WAV || "asset/zero_shot_prompt.wav",
+
   // 프로세스 및 에이전트 제어
   AUTO_KILL_EXISTING: process.env.AUTO_KILL_EXISTING === "true",
   HERMES_BIN: process.env.HERMES_BIN,

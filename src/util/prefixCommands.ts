@@ -349,7 +349,7 @@ export const handlePrefixCommand = async (
         .join("\n");
 
       await message.reply(
-        `🗣️ **현재 설아 목소리**: **${current.label}** (\`${current.id}\`)\n\n**사용 가능한 목소리 프리셋:**\n${presetLines}\n\n변경 방법: \`!목소리 설아\`, \`!목소리 발랄\`, \`!목소리 차분\`, \`!목소리 속삭임\`, \`!목소리 멜로\` 등`,
+        `🗣️ **현재 설아 목소리**: **${current.label}** (\`${current.id}\`)\n\n**사용 가능한 목소리 프리셋:**\n${presetLines}\n\n변경 방법: \`!목소리 설아\`, \`!목소리 코지\`, \`!목소리 발랄\`, \`!목소리 차분\`, \`!목소리 속삭임\`, \`!목소리 멜로\` 등`,
       );
       return;
     }
@@ -360,7 +360,7 @@ export const handlePrefixCommand = async (
         .map((k) => `\`${k}\``)
         .join(", ");
       await message.reply(
-        `\`${targetVoice}\` 목소리 프리셋을 찾을 수 없어요.\n선택 가능한 목소리: ${availableKeys} (또는 \`설아\`, \`발랄\`, \`차분\`, \`속삭임\`, \`멜로\`, \`아바\`, \`선희\`)`,
+        `\`${targetVoice}\` 목소리 프리셋을 찾을 수 없어요.\n선택 가능한 목소리: ${availableKeys} (또는 \`설아\`, \`코지\`, \`발랄\`, \`차분\`, \`속삭임\`, \`멜로\`, \`아바\`, \`선희\`)`,
       );
       return;
     }

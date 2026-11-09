@@ -39,6 +39,10 @@ import {
   splitTextIntoSentences,
   synthesizeMeloSentence,
 } from "./meloTts.ts";
+import {
+  synthesizeCosyVoiceSentence,
+  isCosyVoiceAvailable,
+} from "./cosyVoiceTts.ts";
 
 const { OpusEncoder } = opus;
 
@@ -54,17 +58,19 @@ const MAX_SPEECH_SECONDS = 30.0;
 const MIN_RMS_THRESHOLD = 0.005;
 const MIN_PEAK_THRESHOLD = 0.02;
 
-// TTS 목소리 프리셋 정의 (기본 엔진: 로컬 한국어 전용 신경망 모델 MeloTTS-Korean)
+// TTS 목소리 프리셋 정의 (기본 엔진: 로컬 한국어 전용 신경망 모델 MeloTTS-Korean 및 CosyVoice)
 export interface VoicePreset {
   id: string;
   label: string;
   description: string;
-  engine: "melotts" | "edge";
+  engine: "melotts" | "edge" | "cosyvoice";
   meloSpeed?: number;
   meloFilter?: string;
   meloNoiseScale?: number;
   meloNoiseScaleW?: number;
   meloSdpRatio?: number;
+  cosySpeed?: number;
+  cosyMode?: "3초 음성 복제" | "교차 언어 복제" | "자연어 지시 제어" | "사전 학습 음색";
   voiceName: string;
   voiceLocale: string;
   pitch: string;
@@ -72,6 +78,17 @@ export interface VoicePreset {
 }
 
 export const VOICE_PRESETS: Record<string, VoicePreset> = {
+  cosy: {
+    id: "cosy",
+    label: "코지 (CosyVoice 3 신경망 음성)",
+    description: "상위 디렉터리 CosyVoice 대규모 음성 생성 모델 기반 고음질 보이스",
+    engine: "cosyvoice",
+    cosySpeed: 1.0,
+    voiceName: "ko-KR-SunHiNeural",
+    voiceLocale: "ko-KR",
+    pitch: "+0Hz",
+    rate: "+0%",
+  },
   seola: {
     id: "seola",
     label: "설아 (MeloTTS 자연스러운 기본)",
@@ -224,6 +241,10 @@ export const setVoicePreset = (
     ava: "ava",
     선희: "sunhi",
     sunhi: "sunhi",
+    cosy: "cosy",
+    cosyvoice: "cosy",
+    코지: "cosy",
+    코지보이스: "cosy",
   };
 
   const resolvedKey = aliasMap[key] || (VOICE_PRESETS[key] ? key : undefined);
@@ -839,8 +860,36 @@ export const synthesizeSpeechResource = async (
 
   const preset = getCurrentVoicePreset();
 
+  // 0차: 로컬 CosyVoice 대규모 신경망 엔진 (상위 디렉터리 CosyVoice Gradio 5.x WebUI 연동)
+  if (preset.engine === "cosyvoice") {
+    try {
+      const isAvailable = await isCosyVoiceAvailable();
+      if (!isAvailable) {
+        console.warn(
+          "[VoiceChat] CosyVoice 서버가 응답하지 않아 MeloTTS로 폴백합니다.",
+        );
+      } else {
+        const cosyResult = await synthesizeCosyVoiceSentence(speakableText, {
+          speed: preset.cosySpeed ?? 1.0,
+          mode: preset.cosyMode,
+        });
+        if (cosyResult) {
+          return {
+            streamOrPath: cosyResult.stream,
+            inputType: StreamType.Arbitrary,
+          };
+        }
+      }
+    } catch (cosyError) {
+      console.warn(
+        "[VoiceChat] CosyVoice 합성 실패, MeloTTS로 폴백합니다:",
+        cosyError,
+      );
+    }
+  }
+
   // 1차: 로컬 MeloTTS-Korean 엔진 (한국어 억양/장단음 최적화 + 실시간 감정 필터링)
-  if (preset.engine === "melotts") {
+  if (preset.engine === "melotts" || preset.engine === "cosyvoice") {
     try {
       const activeFilter = emotion.filter || preset.meloFilter;
       const baseSpeed = preset.meloSpeed ?? 1.0;
