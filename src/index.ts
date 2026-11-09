@@ -19,6 +19,7 @@ import {
   initVoicePresetFromDb,
   leaveAllVoiceChannels,
   preloadWhisperModel,
+  restoreVoiceSessionsIfRecent,
 } from "./util/voiceChat.ts";
 import { initPersonaFromDb } from "./util/persona.ts";
 import {
@@ -101,6 +102,10 @@ discordClient.once(Events.ClientReady, async (readyClient) => {
   preloadWhisperModel().catch(() => {});
   // 디스코드 슬래시(/) 명령어 자동 동기화 등록
   await registerSlashCommands(readyClient);
+  // 재부팅/업데이트 이전 음성 채널 자동 재입장 복원 (최근 10분 이내 활성 세션)
+  await restoreVoiceSessionsIfRecent(readyClient, player).catch((err) => {
+    console.error("[VoiceChat] 음성 채널 자동 복원 실패:", err);
+  });
 });
 
 // 슬래시(/) 명령어 인터랙션 디스패치

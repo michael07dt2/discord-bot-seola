@@ -26,14 +26,23 @@ import type {
   SendableChannels,
   VoiceBasedChannel,
 } from "discord.js";
-import { generateAIResponse, appendConversationContext } from "./helper.ts";
+import {
+  generateAIResponse,
+  appendConversationContext,
+  connectToVoiceChannel,
+} from "./helper.ts";
 import { songMap } from "./songmap.ts";
 import {
   playMusicTrack,
   stopGuildMusic,
   createMusicTrackEmbed,
 } from "./youtubeMusic.ts";
-import { getBotSetting, setBotSetting } from "./settings.ts";
+import {
+  getBotSetting,
+  setBotSetting,
+  getBotSettingsByPrefix,
+  deleteBotSetting,
+} from "./settings.ts";
 import {
   recordVoiceTranscript,
   type ActiveVoiceSessionStatus,
@@ -509,6 +518,170 @@ export const leaveVoiceChannel = (guildId: string): boolean => {
   return session !== undefined;
 };
 
+export interface PersistedVoiceSessionData {
+  guildId: string;
+  guildName: string;
+  voiceChannelId: string;
+  voiceChannelName: string;
+  textChannelId: string | null;
+  savedAt: number;
+}
+
+/**
+ * 음성 채널 접속 세션을 DB에 영구 저장 (재부팅/업데이트 시 복원용)
+ */
+export const saveVoiceSessionToDb = async (session: {
+  guildId: string;
+  guildName: string;
+  voiceChannelId: string;
+  voiceChannelName: string;
+  textChannelId: string | null;
+}): Promise<void> => {
+  try {
+    const key = `voice_session:${session.guildId}`;
+    const data: PersistedVoiceSessionData = {
+      ...session,
+      savedAt: Date.now(),
+    };
+    await setBotSetting(key, JSON.stringify(data));
+  } catch (err) {
+    console.warn("[VoiceChat] 음성 세션 상태 저장 실패:", err);
+  }
+};
+
+/**
+ * 정상 퇴장 시 DB에서 음성 세션 삭제
+ */
+export const clearVoiceSessionFromDb = async (guildId: string): Promise<void> => {
+  try {
+    await deleteBotSetting(`voice_session:${guildId}`);
+  } catch (err) {
+    console.warn(`[VoiceChat] 음성 세션 상태 삭제 실패 (길드: ${guildId}):`, err);
+  }
+};
+
+/**
+ * 봇 재시작/업데이트 시, 최근에 접속해 있던 음성 채널 자동 복원
+ * - 최근 10분 이내에 활성화되어 있었고,
+ * - 채널에 다른 유저(사람)가 아직 남아있을 경우에만 자동 재입장
+ */
+export const restoreVoiceSessionsIfRecent = async (
+  client: Client,
+  player: AudioPlayer,
+  maxAgeMs = 10 * 60 * 1000, // 기본 10분 이내
+): Promise<void> => {
+  try {
+    const rows = await getBotSettingsByPrefix("voice_session:");
+    if (rows.length === 0) return;
+
+    const now = Date.now();
+    for (const row of rows) {
+      let data: PersistedVoiceSessionData | null = null;
+      try {
+        data = JSON.parse(row.value) as PersistedVoiceSessionData;
+      } catch {
+        await deleteBotSetting(row.key);
+        continue;
+      }
+
+      if (!data || !data.guildId || !data.voiceChannelId) {
+        await deleteBotSetting(row.key);
+        continue;
+      }
+
+      // 1. 오래된 세션인지 확인 (지정 시간 초과 시 만료 처리)
+      const elapsedMs = now - (data.savedAt || 0);
+      if (elapsedMs > maxAgeMs) {
+        console.log(
+          `[VoiceChat] ⏳ 길드(${data.guildName || data.guildId}) 이전 음성 세션 만료(${Math.round(elapsedMs / 1000 / 60)}분 전)로 자동 복원을 건너뜁니다.`,
+        );
+        await deleteBotSetting(row.key);
+        continue;
+      }
+
+      // 2. 길드 및 음성 채널 존재 확인
+      const guild = await client.guilds.fetch(data.guildId).catch(() => null);
+      if (!guild) {
+        await deleteBotSetting(row.key);
+        continue;
+      }
+
+      const voiceChannel = (await guild.channels
+        .fetch(data.voiceChannelId)
+        .catch(() => null)) as VoiceBasedChannel | null;
+      if (!voiceChannel || !voiceChannel.isVoiceBased()) {
+        await deleteBotSetting(row.key);
+        continue;
+      }
+
+      // 3. 음성 채널에 봇이 아닌 실제 사람 멤버가 남아있는지 확인
+      const humanMembers = voiceChannel.members.filter((m) => !m.user.bot);
+      if (humanMembers.size === 0) {
+        console.log(
+          `[VoiceChat] 👥 길드(${guild.name})의 음성 채널(${voiceChannel.name})에 사용자가 아무도 없어 자동 재입장을 건너뜁니다.`,
+        );
+        await deleteBotSetting(row.key);
+        continue;
+      }
+
+      // 4. 텍스트 채널 해석
+      let textChannel: SendableChannels | null = null;
+      if (data.textChannelId) {
+        const resolvedText = await guild.channels
+          .fetch(data.textChannelId)
+          .catch(() => null);
+        if (resolvedText && resolvedText.isSendable()) {
+          textChannel = resolvedText as SendableChannels;
+        }
+      }
+
+      // 5. 음성 채널 자동 재입장 및 리스너 등록
+      try {
+        console.log(
+          `[VoiceChat] 🔄 재부팅 이전 음성 세션 복원 시작: ${guild.name} / ${voiceChannel.name} (대기 인원: ${humanMembers.size}명)`,
+        );
+        const connection = await connectToVoiceChannel(voiceChannel);
+        setupVoiceChatListener({
+          client,
+          connection,
+          voiceChannel,
+          textChannel,
+          player,
+        });
+
+        // 텍스트 안내 메시지
+        if (textChannel && textChannel.isSendable()) {
+          await textChannel
+            .send(
+              `🌸 **설아가 돌아왔어요!** 봇 재시작/업데이트가 완료되어 음성 채널(**${voiceChannel.name}**)에 자동으로 다시 연결되었습니다.`,
+            )
+            .catch(() => {});
+        }
+
+        // 음성 안내 TTS 발화
+        await speakInVoiceChannel(
+          connection,
+          player,
+          guild.id,
+          "업데이트가 끝나서 다시 돌아왔어!",
+        );
+
+        console.log(
+          `[VoiceChat] ✅ 음성 세션 자동 복원 완료: ${guild.name} / ${voiceChannel.name}`,
+        );
+      } catch (connErr) {
+        console.error(
+          `[VoiceChat] 음성 세션 자동 복원 실패 (${guild.name} / ${voiceChannel.name}):`,
+          connErr,
+        );
+        await deleteBotSetting(row.key);
+      }
+    }
+  } catch (err) {
+    console.error("[VoiceChat] 음성 세션 복원 중 예외 발생:", err);
+  }
+};
+
 /**
  * 프로세스 종료 또는 봇 재시작 시 활성화된 모든 음성 채널에서 완전히 퇴장 처리
  */
@@ -530,10 +703,12 @@ export const leaveAllVoiceChannels = async (): Promise<void> => {
 };
 
 /**
- * 길드 음성 대화 세션 해제
+ * 길드 음성 대화 세션 해제 (사용자 요청에 의한 명시적 퇴장)
  */
 export const removeVoiceChatSession = (guildId: string): void => {
   leaveVoiceChannel(guildId);
+  // 사용자의 명시적 퇴장이므로 DB에서 세션 삭제 (재부팅 시 자동 재입장 방지)
+  clearVoiceSessionFromDb(guildId).catch(() => {});
 };
 
 /**
@@ -1313,6 +1488,15 @@ export const setupVoiceChatListener = (params: {
   // 오디오 플레이어 음성 연결에 구독
   connection.subscribe(player);
 
+  // 음성 채널 세션 상태를 DB에 저장 (재부팅/업데이트 시 자동 복원용)
+  saveVoiceSessionToDb({
+    guildId,
+    guildName: voiceChannel.guild.name,
+    voiceChannelId: voiceChannel.id,
+    voiceChannelName: voiceChannel.name,
+    textChannelId: textChannel?.id || null,
+  }).catch(() => {});
+
   const session: GuildVoiceSession = {
     guildId,
     voiceChannel,
@@ -1622,6 +1806,15 @@ export const setupVoiceChatListener = (params: {
             actionType: "chat",
             durationSec,
           });
+
+          // 음성 세션 타임스탬프 갱신 (지속 통화 중 봇 업데이트 시에도 복원 가능하도록 유지)
+          saveVoiceSessionToDb({
+            guildId,
+            guildName: voiceChannel.guild.name,
+            voiceChannelId: voiceChannel.id,
+            voiceChannelName: voiceChannel.name,
+            textChannelId: session.textChannel?.id || null,
+          }).catch(() => {});
 
           await speechPipeline.finish();
         })

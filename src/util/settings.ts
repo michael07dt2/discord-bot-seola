@@ -1,4 +1,4 @@
-import { eq, sql } from "drizzle-orm";
+import { eq, like, sql } from "drizzle-orm";
 import { db, botSettingsTable } from "../db/index.ts";
 
 let isTableInitialized = false;
@@ -70,5 +70,39 @@ export const setBotSetting = async (
       });
   } catch (error) {
     console.error(`[Settings] 설정 저장 오류 (key: ${key}, val: ${value}):`, error);
+  }
+};
+
+/**
+ * 특정 접두사(prefix)로 시작하는 설정 목록 조회
+ */
+export const getBotSettingsByPrefix = async (
+  prefix: string,
+): Promise<{ key: string; value: string }[]> => {
+  try {
+    await ensureBotSettingsTable();
+    const rows = await db
+      .select({
+        key: botSettingsTable.key,
+        value: botSettingsTable.value,
+      })
+      .from(botSettingsTable)
+      .where(like(botSettingsTable.key, `${prefix}%`));
+    return rows;
+  } catch (error) {
+    console.error(`[Settings] 접두사 설정 조회 오류 (prefix: ${prefix}):`, error);
+    return [];
+  }
+};
+
+/**
+ * DB에서 특정 설정값 삭제
+ */
+export const deleteBotSetting = async (key: string): Promise<void> => {
+  try {
+    await ensureBotSettingsTable();
+    await db.delete(botSettingsTable).where(eq(botSettingsTable.key, key));
+  } catch (error) {
+    console.error(`[Settings] 설정 삭제 오류 (key: ${key}):`, error);
   }
 };
