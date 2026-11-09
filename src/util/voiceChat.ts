@@ -106,7 +106,7 @@ export const VOICE_PRESETS: Record<string, VoicePreset> = {
     description: "차분하고 쿨하면서도 앙칼진 블루아카이브 케이의 신경망 복제 보이스 (Qwen3-TTS / CosyVoice)",
     engine: "qwen",
     qwenMode: "clone",
-    qwenRefAudio: path.resolve(process.cwd(), "../qwen3-tts-mlx/samples/youtube_kei.wav"),
+    qwenRefAudio: "/Users/micha/Projects/personal_projects/qwen3-tts-mlx/samples/youtube_kei.wav",
     qwenRefText: "에이! 진짜 그렇게 착한 애 취급하지 말라구요! 그쵸! 그렇게까지 애 아니니까요! 무섭겠다... 선생님 지금 웃었죠? 똑똑히 봤어요! 두고 봐요! 언젠간 그 몸에 뼈저리게 새겨줄테니까!",
     cosySpeed: 1.0,
     cosyMode: "3초 음성 복제",

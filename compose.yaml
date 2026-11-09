@@ -32,6 +32,8 @@ services:
       - OLLAMA_BASE_URL=http://host.docker.internal:11434
       # 호스트 머신의 CosyVoice Gradio 5.x WebUI 엔드포인트 연결
       - COSYVOICE_API_URL=http://host.docker.internal:8000
+      # 호스트 머신의 Qwen3-TTS MLX 엔드포인트 연결
+      - QWEN_TTS_API_URL=http://host.docker.internal:7865
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:

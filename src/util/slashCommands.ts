@@ -185,6 +185,37 @@ export const slashCommands = [
             .setDescription("설아가 소리 내어 읽을 문장")
             .setRequired(true),
         ),
+    )
+    .addSubcommand((sub) =>
+      sub
+        .setName("set")
+        .setNameLocalization("ko", "설정")
+        .setDescription("설아의 음성(목소리) 프리셋을 변경합니다.")
+        .addStringOption((opt) =>
+          opt
+            .setName("preset")
+            .setNameLocalization("ko", "목소리프리셋")
+            .setDescription("변경할 음성 프리셋")
+            .setRequired(true)
+            .addChoices(
+              { name: "🤖 케이 (블루아카이브 KEY Qwen3-TTS 복제)", value: "kei" },
+              { name: "⚡ 큐웬 (Qwen3-TTS MLX 신경망 음성)", value: "qwen" },
+              { name: "🔮 코지 (CosyVoice 3 신경망 음성)", value: "cosy" },
+              { name: "🌸 설아 (기본 20대 여성톤, MeloTTS)", value: "seola" },
+              { name: "✨ 발랄 (톤 업, 귀엽고 밝은 어투)", value: "lively" },
+              { name: "☕ 차분 (성숙하고 차분한 어투)", value: "calm" },
+              { name: "🌙 속삭임 (나직하고 부드러운 톤)", value: "whisper" },
+              { name: "🎙️ 멜로 (중립 원음 기준)", value: "melo" },
+              { name: "💎 아바 (Edge 다국어 음성 Ava)", value: "ava" },
+              { name: "🎀 선희 (Edge 한국어 음성 SunHi)", value: "sunhi" },
+            ),
+        ),
+    )
+    .addSubcommand((sub) =>
+      sub
+        .setName("list")
+        .setNameLocalization("ko", "목록")
+        .setDescription("사용 가능한 목소리(TTS) 프리셋 목록을 확인합니다."),
     ),
 
   new SlashCommandBuilder()
@@ -683,6 +714,69 @@ export const handleSlashCommand = async (
         } catch (err: any) {
           console.error("[SlashCommands] voice speak 실패:", err);
           await interaction.editReply("❌ 음성 발화 중 오류가 발생했습니다.");
+        }
+        return;
+      }
+
+      if (sub === "list") {
+        const current = getCurrentVoicePreset();
+        const listText = Object.values(VOICE_PRESETS)
+          .map((p) => `• **${p.label}** (\`${p.id}\`) — ${p.description}`)
+          .join("\n");
+
+        await interaction.editReply({
+          embeds: [
+            new EmbedBuilder()
+              .setColor(0xff85a2)
+              .setTitle("🗣️ 설아 목소리(TTS) 프리셋 목록")
+              .setDescription(
+                `현재 적용된 목소리: **${current.label}** (\`${current.id}\`)\n\n${listText}`,
+              )
+              .setFooter({ text: "변경: /voice set preset:<프리셋명> 또는 /preset voice:<프리셋명>" }),
+          ],
+        });
+        return;
+      }
+
+      if (sub === "set") {
+        const targetVoice = interaction.options.getString("preset", true);
+        const updated = await setVoicePreset(targetVoice);
+        if (!updated) {
+          await interaction.editReply(`❌ \`${targetVoice}\` 목소리 프리셋을 찾을 수 없습니다.`);
+          return;
+        }
+
+        if (sharedStatusSnapshotGetter) {
+          notifyDashboardStatusChanged(sharedStatusSnapshotGetter());
+        }
+        await appendConversationContext(
+          userName,
+          `/voice set preset:${targetVoice}`,
+          `목소리가 ${updated.label}(${updated.id})로 변경되었습니다.`,
+        );
+
+        await interaction.editReply({
+          embeds: [
+            new EmbedBuilder()
+              .setColor(0x57f287)
+              .setTitle("🗣️ 목소리 프리셋 변경 완료")
+              .setDescription(
+                `설아의 목소리가 **${updated.label}** (\`${updated.id}\`)(으)로 변경되었습니다!\n*설명:* ${updated.description}`,
+              ),
+          ],
+        });
+
+        // 음성 채널에 연결되어 있다면 샘플 인사 발화
+        if (interaction.guildId && sharedAudioPlayer) {
+          const connection = getVoiceConnection(interaction.guildId);
+          if (connection) {
+            await speakInVoiceChannel(
+              connection,
+              sharedAudioPlayer,
+              interaction.guildId,
+              "목소리를 바꿔봤는데 어때? 마음에 들어?",
+            ).catch(() => {});
+          }
         }
         return;
       }
