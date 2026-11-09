@@ -66,7 +66,12 @@ export const synthesizeCosyVoiceSentence = async (
 
   const baseUrl = CONFIG.COSYVOICE_API_URL.replace(/\/+$/, "");
   const mode = options?.mode || CONFIG.COSYVOICE_MODE;
-  const promptText = options?.promptText || CONFIG.COSYVOICE_PROMPT_TEXT;
+  let promptText = options?.promptText || CONFIG.COSYVOICE_PROMPT_TEXT;
+  // CosyVoice 3.0(Fun-CosyVoice3-0.5B) 필수 규격:
+  // 프롬프트 텍스트 앞에 <|endofprompt|> 특수 토큰이 없으면 모델 AssertionError가 발생하므로 자동 보정
+  if (promptText && !promptText.includes("<|endofprompt|>")) {
+    promptText = `You are a helpful assistant.<|endofprompt|>${promptText}`;
+  }
   const promptWavPath = options?.promptWavPath || CONFIG.COSYVOICE_PROMPT_WAV;
   const instructText = options?.instructText || "";
   const sftSpeaker = options?.sftSpeaker || "(사전 학습 음색 없음)";
@@ -128,8 +133,10 @@ export const synthesizeCosyVoiceSentence = async (
     const decoder = new TextDecoder();
     let buffer = "";
     let finalAudioMeta: { path?: string; url?: string } | null = null;
+    let sseErrorMsg: string | null = null;
 
     try {
+      let currentEvent = "";
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
@@ -139,8 +146,15 @@ export const synthesizeCosyVoiceSentence = async (
         buffer = lines.pop() ?? "";
 
         for (const line of lines) {
-          if (line.startsWith("data:")) {
-            const jsonStr = line.slice(5).trim();
+          const trimmed = line.trim();
+          if (trimmed.startsWith("event:")) {
+            currentEvent = trimmed.slice(6).trim();
+          } else if (trimmed.startsWith("data:")) {
+            const jsonStr = trimmed.slice(5).trim();
+            if (currentEvent === "error") {
+              sseErrorMsg = jsonStr || "알 수 없는 백엔드 에러";
+              console.error("[CosyVoice] Gradio SSE 에러 수신:", sseErrorMsg);
+            }
             try {
               const parsed = JSON.parse(jsonStr);
               if (Array.isArray(parsed) && parsed[0]?.path) {
@@ -152,8 +166,25 @@ export const synthesizeCosyVoiceSentence = async (
           }
         }
       }
+
+      // 스트림 종료 후 버퍼 잔여 줄 파싱
+      if (buffer.trim().startsWith("data:")) {
+        const jsonStr = buffer.trim().slice(5).trim();
+        try {
+          const parsed = JSON.parse(jsonStr);
+          if (Array.isArray(parsed) && parsed[0]?.path) {
+            finalAudioMeta = parsed[0];
+          }
+        } catch {
+          // 무시
+        }
+      }
     } finally {
       reader.releaseLock();
+    }
+
+    if (sseErrorMsg) {
+      throw new Error(`CosyVoice 백엔드 모델 에러: ${sseErrorMsg}`);
     }
 
     if (!finalAudioMeta?.path) {
