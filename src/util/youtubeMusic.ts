@@ -12,6 +12,7 @@ import {
 } from "@discordjs/voice";
 import youtubedl, { type Payload } from "youtube-dl-exec";
 import ffmpegStatic from "ffmpeg-static";
+import { EmbedBuilder } from "discord.js";
 import { songMap } from "./songmap.ts";
 
 // prism-media 및 @discordjs/voice 가 내부적으로 ffmpeg-static 바이너리를 사용하도록 보장
@@ -321,4 +322,45 @@ export const playMusicTrack = async (params: {
       errorMessage: `유튜브 음악 재생 중 오류가 발생했습니다: ${err?.message || err}`,
     };
   }
+};
+
+/**
+ * 재생 중인 트랙 정보를 미려한 디스코드 임베드로 생성
+ */
+export const createMusicTrackEmbed = (
+  track: MusicTrackInfo,
+  requesterName?: string,
+): EmbedBuilder => {
+  if (track.isLocal) {
+    return new EmbedBuilder()
+      .setColor(0xff85a2)
+      .setTitle(`🎵 ${track.title}`)
+      .setDescription("설아의 내장 고음질 로컬 음원을 재생합니다!")
+      .addFields(
+        { name: "음원 출처", value: "📁 로컬 라이브러리", inline: true },
+        { name: "파일명", value: `\`${track.fileName}\``, inline: true },
+        { name: "신청자", value: requesterName || "설아", inline: true },
+      )
+      .setFooter({ text: "설아 뮤직 플레이어 • 정지: /music stop 또는 !stop" })
+      .setTimestamp();
+  }
+
+  const embed = new EmbedBuilder()
+    .setColor(0xff0000)
+    .setTitle(`🎵 ${track.title}`)
+    .setURL(track.url)
+    .setDescription("유튜브에서 음원을 찾아 재생을 시작합니다!")
+    .addFields(
+      { name: "채널 / 아티스트", value: track.uploader || "YouTube", inline: true },
+      { name: "재생 시간", value: track.formattedDuration, inline: true },
+      { name: "신청자", value: requesterName || "설아", inline: true },
+    )
+    .setFooter({ text: "설아 뮤직 플레이어 • 정지: /music stop 또는 !stop" })
+    .setTimestamp();
+
+  if (track.thumbnail) {
+    embed.setThumbnail(track.thumbnail);
+  }
+
+  return embed;
 };

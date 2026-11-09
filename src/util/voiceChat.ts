@@ -28,7 +28,11 @@ import type {
 } from "discord.js";
 import { generateAIResponse } from "./helper.ts";
 import { songMap } from "./songmap.ts";
-import { playMusicTrack, stopGuildMusic } from "./youtubeMusic.ts";
+import {
+  playMusicTrack,
+  stopGuildMusic,
+  createMusicTrackEmbed,
+} from "./youtubeMusic.ts";
 import { getBotSetting, setBotSetting } from "./settings.ts";
 import {
   recordVoiceTranscript,
@@ -1541,6 +1545,11 @@ export const setupVoiceChatListener = (params: {
               const replyText = playResult.track.isLocal
                 ? `${playResult.track.title} 틀어줄게!`
                 : `유튜브에서 ${playResult.track.title} 찾아 틀어줄게!`;
+
+              if (session.textChannel && session.textChannel.isSendable()) {
+                const embed = createMusicTrackEmbed(playResult.track, userName);
+                session.textChannel.send({ embeds: [embed] }).catch(() => {});
+              }
 
               await recordVoiceTranscript({
                 guildName: voiceChannel.guild.name,

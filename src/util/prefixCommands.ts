@@ -31,6 +31,7 @@ import {
   playMusicTrack,
   stopGuildMusic,
   getGuildCurrentTrack,
+  createMusicTrackEmbed,
 } from "./youtubeMusic.ts";
 import {
   getBotStatusReport,
@@ -536,13 +537,11 @@ export const handlePrefixCommand = async (
       }
 
       const track = result.track;
-      if (track.isLocal) {
-        await loadingMsg.edit(`🎶 **${track.title}** 로컬 음원을 재생합니다!`);
-      } else {
-        await loadingMsg.edit(
-          `🎵 **${track.title}**\n유튜브 재생 시작 (${track.formattedDuration}) | ${track.url}`,
-        );
-      }
+      const embed = createMusicTrackEmbed(
+        track,
+        message.member?.displayName || message.author.username,
+      );
+      await loadingMsg.edit({ content: null, embeds: [embed] });
       return;
     } catch (error: any) {
       console.error("오디오 리소스 생성 실패:", error);

@@ -28,6 +28,7 @@ import {
   playMusicTrack,
   stopGuildMusic,
   getGuildCurrentTrack,
+  createMusicTrackEmbed,
 } from "./youtubeMusic.ts";
 import {
   getBotStatusReport,
@@ -861,24 +862,8 @@ export const handleSlashCommand = async (
           }
 
           const track = playResult.track;
-          if (track.isLocal) {
-            await interaction.editReply(`🎶 **${track.title}** 로컬 음원을 재생합니다!`);
-          } else {
-            const embed = new EmbedBuilder()
-              .setColor(0xff0000)
-              .setTitle(`🎵 ${track.title}`)
-              .setURL(track.url)
-              .setDescription("유튜브에서 곡을 찾아 재생을 시작합니다!")
-              .addFields(
-                { name: "채널", value: track.uploader || "YouTube", inline: true },
-                { name: "재생 시간", value: track.formattedDuration, inline: true },
-                { name: "신청자", value: userName, inline: true },
-              );
-            if (track.thumbnail) {
-              embed.setThumbnail(track.thumbnail);
-            }
-            await interaction.editReply({ embeds: [embed] });
-          }
+          const embed = createMusicTrackEmbed(track, userName);
+          await interaction.editReply({ embeds: [embed] });
         } catch (e: any) {
           console.error("음악 재생 연결 실패:", e);
           setGuildPlaybackMode(voiceChannel.guild.id, "idle");
