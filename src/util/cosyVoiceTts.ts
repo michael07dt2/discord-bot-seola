@@ -72,10 +72,16 @@ export const synthesizeCosyVoiceSentence = async (
   const sftSpeaker = options?.sftSpeaker || "(사전 학습 음색 없음)";
   const speed = options?.speed ?? 1.0;
   const seed = options?.seed ?? 0;
-  const timeoutMs = options?.timeoutMs ?? 30_000;
+  const timeoutMs = options?.timeoutMs ?? CONFIG.COSYVOICE_TIMEOUT_MS;
+  const startTime = Date.now();
 
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+  const displayExcerpt = text.length > 25 ? `${text.slice(0, 25)}...` : text;
+  console.log(
+    `[CosyVoice] 🎙️ 음성 합성 시작: "${displayExcerpt}" (모드: ${mode}, 제한시간: ${timeoutMs / 1000}초)`,
+  );
 
   try {
     // 1. 추론 요청 (POST /gradio_api/call/generate_audio)
@@ -182,12 +188,23 @@ export const synthesizeCosyVoiceSentence = async (
     const passThrough = new PassThrough();
     passThrough.end(audioBuffer);
 
+    const elapsedSec = ((Date.now() - startTime) / 1000).toFixed(1);
+    console.log(
+      `[CosyVoice] ✅ 음성 합성 완료 (${elapsedSec}초 소요, 크기: ${audioBuffer.length}바이트)`,
+    );
+
     return {
       stream: passThrough,
       sampleRate: 24000,
     };
-  } catch (err) {
-    console.error("[CosyVoice] 음성 합성 중 오류 발생:", err);
+  } catch (err: any) {
+    if (err?.name === "AbortError") {
+      console.error(
+        `[CosyVoice] ⏱️ 음성 합성 시간 초과 (${timeoutMs / 1000}초): 로컬 모델 추론 시간이 초과되었습니다.`,
+      );
+    } else {
+      console.error("[CosyVoice] 음성 합성 중 오류 발생:", err);
+    }
     throw err;
   } finally {
     clearTimeout(timeoutId);
