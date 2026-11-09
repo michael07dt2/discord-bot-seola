@@ -50,6 +50,15 @@ export const CONFIG = {
     10,
   ),
 
+  // Qwen3-TTS MLX 백엔드 설정 (Apple Silicon 포트 7865)
+  QWEN_TTS_API_URL: (
+    process.env.QWEN_TTS_API_URL || "http://127.0.0.1:7865"
+  ).replace(/\/+$/, ""),
+  QWEN_TTS_TIMEOUT_MS: parseInt(
+    process.env.QWEN_TTS_TIMEOUT_MS || "180000",
+    10,
+  ),
+
   // 프로세스 및 에이전트 제어
   AUTO_KILL_EXISTING: process.env.AUTO_KILL_EXISTING === "true",
   HERMES_BIN: process.env.HERMES_BIN,

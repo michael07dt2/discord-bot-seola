@@ -56,6 +56,10 @@ import {
   synthesizeCosyVoiceSentence,
   isCosyVoiceAvailable,
 } from "./cosyVoiceTts.ts";
+import {
+  synthesizeQwenSentence,
+  isQwenTtsAvailable,
+} from "./qwenTts.ts";
 
 const { OpusEncoder } = opus;
 
@@ -71,12 +75,12 @@ const MAX_SPEECH_SECONDS = 30.0;
 const MIN_RMS_THRESHOLD = 0.005;
 const MIN_PEAK_THRESHOLD = 0.02;
 
-// TTS 목소리 프리셋 정의 (기본 엔진: 로컬 한국어 전용 신경망 모델 MeloTTS-Korean 및 CosyVoice)
+// TTS 목소리 프리셋 정의 (기본 엔진: 로컬 한국어 전용 신경망 모델 MeloTTS-Korean 및 CosyVoice/Qwen3-TTS)
 export interface VoicePreset {
   id: string;
   label: string;
   description: string;
-  engine: "melotts" | "edge" | "cosyvoice";
+  engine: "melotts" | "edge" | "cosyvoice" | "qwen";
   meloSpeed?: number;
   meloFilter?: string;
   meloNoiseScale?: number;
@@ -84,6 +88,11 @@ export interface VoicePreset {
   meloSdpRatio?: number;
   cosySpeed?: number;
   cosyMode?: "3초 음성 복제" | "교차 언어 복제" | "자연어 지시 제어" | "사전 학습 음색";
+  qwenMode?: "clone" | "custom";
+  qwenSpeaker?: string;
+  qwenInstruct?: string;
+  qwenRefAudio?: string;
+  qwenRefText?: string;
   voiceName: string;
   voiceLocale: string;
   pitch: string;
@@ -91,6 +100,34 @@ export interface VoicePreset {
 }
 
 export const VOICE_PRESETS: Record<string, VoicePreset> = {
+  kei: {
+    id: "kei",
+    label: "케이 (블루아카이브 KEY 음성 복제)",
+    description: "차분하고 쿨하면서도 앙칼진 블루아카이브 케이의 신경망 복제 보이스 (Qwen3-TTS / CosyVoice)",
+    engine: "qwen",
+    qwenMode: "clone",
+    qwenRefAudio: path.resolve(process.cwd(), "../qwen3-tts-mlx/samples/youtube_kei.wav"),
+    qwenRefText: "에이! 진짜 그렇게 착한 애 취급하지 말라구요! 그쵸! 그렇게까지 애 아니니까요! 무섭겠다... 선생님 지금 웃었죠? 똑똑히 봤어요! 두고 봐요! 언젠간 그 몸에 뼈저리게 새겨줄테니까!",
+    cosySpeed: 1.0,
+    cosyMode: "3초 음성 복제",
+    voiceName: "kei-custom",
+    voiceLocale: "ko-KR",
+    pitch: "+0Hz",
+    rate: "+0%",
+  },
+  qwen: {
+    id: "qwen",
+    label: "큐웬 (Qwen3-TTS MLX 프리셋)",
+    description: "Apple Silicon 최적화 Qwen3-TTS 0.6B CustomVoice 모델 (Vivian 성우)",
+    engine: "qwen",
+    qwenMode: "custom",
+    qwenSpeaker: "Vivian",
+    qwenInstruct: "밝고 친절한 상냥한 톤으로 말해줘.",
+    voiceName: "qwen-vivian",
+    voiceLocale: "ko-KR",
+    pitch: "+0Hz",
+    rate: "+0%",
+  },
   cosy: {
     id: "cosy",
     label: "코지 (CosyVoice 음성 복제)",
@@ -307,6 +344,12 @@ export const setVoicePreset = async (
     cosyvoice: "cosy",
     코지: "cosy",
     코지보이스: "cosy",
+    kei: "kei",
+    케이: "kei",
+    key: "kei",
+    qwen: "qwen",
+    큐웬: "qwen",
+    qwen3: "qwen",
   };
 
   const resolvedKey = aliasMap[key] || (VOICE_PRESETS[key] ? key : undefined);
@@ -1092,6 +1135,53 @@ export const synthesizeSpeechResource = async (
 
   const preset = getCurrentVoicePreset();
 
+  // -1차: Qwen3-TTS MLX 신경망 엔진 (Apple Silicon Metal 가속)
+  if (preset.engine === "qwen") {
+    try {
+      const isAvailable = await isQwenTtsAvailable();
+      if (!isAvailable) {
+        console.warn(
+          `[VoiceChat] Qwen3-TTS 서버(${CONFIG.QWEN_TTS_API_URL})가 응답하지 않아 CosyVoice/MeloTTS로 폴백합니다.`,
+        );
+        // 케이 프리셋인 경우 CosyVoice 서버 가용 여부 확인 후 CosyVoice로 시도
+        if (preset.id === "kei" && (await isCosyVoiceAvailable())) {
+          const cosyResult = await synthesizeCosyVoiceSentence(speakableText, {
+            speed: preset.cosySpeed ?? 1.0,
+            mode: "3초 음성 복제",
+            promptText: CONFIG.COSYVOICE_PROMPT_TEXT,
+            promptWavPath: CONFIG.COSYVOICE_PROMPT_WAV,
+            instructText: CONFIG.COSYVOICE_INSTRUCT_TEXT,
+          });
+          if (cosyResult) {
+            return {
+              streamOrPath: cosyResult.stream,
+              inputType: StreamType.Arbitrary,
+            };
+          }
+        }
+      } else {
+        const qwenResult = await synthesizeQwenSentence(speakableText, {
+          mode: preset.qwenMode || "clone",
+          speaker: preset.qwenSpeaker || "Vivian",
+          instruct: preset.qwenInstruct || "",
+          refAudio: preset.qwenRefAudio,
+          refText: preset.qwenRefText,
+        });
+        if (qwenResult) {
+          return {
+            streamOrPath: qwenResult.stream,
+            inputType: StreamType.Arbitrary,
+          };
+        }
+      }
+    } catch (qwenError) {
+      console.warn(
+        "[VoiceChat] Qwen3-TTS 합성 실패, 폴백을 시도합니다:",
+        qwenError,
+      );
+    }
+  }
+
   // 0차: 로컬 CosyVoice 대규모 신경망 엔진 (상위 디렉터리 CosyVoice Gradio 5.x WebUI 연동)
   if (preset.engine === "cosyvoice") {
     try {
@@ -1124,7 +1214,7 @@ export const synthesizeSpeechResource = async (
   }
 
   // 1차: 로컬 MeloTTS-Korean 엔진 (한국어 억양/장단음 최적화 + 실시간 감정 필터링)
-  if (preset.engine === "melotts" || preset.engine === "cosyvoice") {
+  if (preset.engine === "melotts" || preset.engine === "cosyvoice" || preset.engine === "qwen") {
     try {
       const activeFilter = emotion.filter || preset.meloFilter;
       const baseSpeed = preset.meloSpeed ?? 1.0;

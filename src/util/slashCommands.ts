@@ -198,6 +198,9 @@ export const slashCommands = [
         .setDescription("변경할 음성 프리셋")
         .setRequired(false)
         .addChoices(
+          { name: "🤖 케이 (블루아카이브 KEY 복제 음성)", value: "kei" },
+          { name: "⚡ 큐웬 (Qwen3-TTS MLX 신경망 음성)", value: "qwen" },
+          { name: "🔮 코지 (CosyVoice 3 신경망 음성)", value: "cosy" },
           { name: "🌸 설아 (기본 20대 여성톤, MeloTTS)", value: "seola" },
           { name: "✨ 발랄 (톤 업, 귀엽고 밝은 어투)", value: "lively" },
           { name: "☕ 차분 (성숙하고 차분한 어투)", value: "calm" },
