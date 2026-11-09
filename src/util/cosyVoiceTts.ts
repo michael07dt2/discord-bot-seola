@@ -54,10 +54,26 @@ export const isCosyVoiceAvailable = async (forceCheck = false): Promise<boolean>
   return lastHealthCheckResult;
 };
 
+// 단일 GPU/MPS 모델의 동시 추론 충돌(CausalConv1d 텐서 소실 및 메모리 경합)을 방지하기 위한 순차 큐
+let inferenceQueue: Promise<unknown> = Promise.resolve();
+
+const enqueueInference = <T>(fn: () => Promise<T>): Promise<T> => {
+  const resultPromise = inferenceQueue.then(fn, fn);
+  inferenceQueue = resultPromise.catch(() => {});
+  return resultPromise;
+};
+
 /**
- * CosyVoice Gradio 5.x API를 통해 텍스트를 고음질 오디오 스트림으로 합성
+ * CosyVoice Gradio 5.x API를 통해 텍스트를 고음질 오디오 스트림으로 합성 (순차 큐 적용)
  */
 export const synthesizeCosyVoiceSentence = async (
+  rawText: string,
+  options?: CosyVoiceOptions,
+): Promise<CosyVoiceResult | null> => {
+  return enqueueInference(() => doSynthesizeCosyVoiceSentence(rawText, options));
+};
+
+const doSynthesizeCosyVoiceSentence = async (
   rawText: string,
   options?: CosyVoiceOptions,
 ): Promise<CosyVoiceResult | null> => {
