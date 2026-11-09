@@ -59,5 +59,15 @@
     "tar": "^7.5.22",
     "minimatch": "^11.0.4",
     "brace-expansion": "^1.1.21"
+  },
+  "allowScripts": {
+    "@discordjs/opus@0.11.0": true,
+    "esbuild@0.25.12": true,
+    "esbuild@0.28.1": true,
+    "ffmpeg-static@5.3.0": true,
+    "msedge-tts@2.1.1": true,
+    "onnxruntime-node@1.30.0": true,
+    "protobufjs@7.6.6": true,
+    "youtube-dl-exec@3.1.19": true
   }
 }
