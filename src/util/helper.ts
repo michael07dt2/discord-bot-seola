@@ -615,7 +615,9 @@ export const generateAIResponse = async (
       if (modelCmd.type === "change") {
         const result = await setUserModel(userName, modelCmd.targetModel);
         if (result.success && result.model) {
-          return `**${userName}**님의 대화 모델이 \`${result.model}\`(으)로 변경되었습니다.`;
+          const reply = `**${userName}**님의 대화 모델이 \`${result.model}\`(으)로 변경되었습니다.`;
+          await appendConversationContext(userName, userMessage, reply);
+          return reply;
         }
         return `\`${modelCmd.targetModel}\` 모델을 찾을 수 없습니다.\n사용 가능한 모델: ${result.availableModels.map((m) => `\`${m}\``).join(", ")}`;
       }
@@ -651,7 +653,9 @@ export const generateAIResponse = async (
           personaCmd.personaId,
           personaCmd.customPrompt,
         );
-        return `🎭 **${userName}**님의 페르소나가 **${result.persona.name}**(으)로 변경되었습니다!\n*특징:* ${result.persona.tagline}`;
+        const reply = `🎭 **${userName}**님의 페르소나가 **${result.persona.name}**(으)로 변경되었습니다!\n*특징:* ${result.persona.tagline}`;
+        await appendConversationContext(userName, userMessage, reply);
+        return reply;
       }
     } catch (error) {
       console.error("페르소나 명령 처리 중 오류 발생:", error);
@@ -897,6 +901,38 @@ export const generateAIResponse = async (
   }
 
   return null;
+};
+
+/**
+ * 일반 명령어(음악, 목소리, 페르소나, 음성 제어 등) 실행 내역을 대화 컨텍스트에 기록
+ * - 사용자가 방금 내린 명령과 봇의 실행 결과를 LLM이 기억하도록 영구 저장
+ */
+export const appendConversationContext = async (
+  userName: string,
+  userMessage: string,
+  botResponse: string,
+): Promise<void> => {
+  if (!userName || !userMessage || !botResponse) return;
+  try {
+    await ensureContextsTimestampColumn();
+    const now = new Date();
+    const userContext: typeof contextsTable.$inferInsert = {
+      name: userName,
+      context: JSON.stringify({ role: "user", content: userMessage.trim() }),
+      createdAt: now,
+    };
+    const botContext: typeof contextsTable.$inferInsert = {
+      name: userName,
+      context: JSON.stringify({
+        role: "assistant",
+        content: botResponse.trim(),
+      }),
+      createdAt: new Date(now.getTime() + 10),
+    };
+    await db.insert(contextsTable).values([userContext, botContext]);
+  } catch (err) {
+    console.warn("[Context] 일반 명령 컨텍스트 저장 실패:", err);
+  }
 };
 
 export const chatAI = async (

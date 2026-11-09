@@ -26,7 +26,7 @@ import type {
   SendableChannels,
   VoiceBasedChannel,
 } from "discord.js";
-import { generateAIResponse } from "./helper.ts";
+import { generateAIResponse, appendConversationContext } from "./helper.ts";
 import { songMap } from "./songmap.ts";
 import {
   playMusicTrack,
@@ -1274,16 +1274,16 @@ const isAddressedToSeola = (text: string): boolean => {
 };
 
 /**
- * 발화 텍스트에서 앞뒤 설아 호출어 제거
+ * 발화 텍스트에서 앞뒤 설아 호출어 제거 ("설아야"는 제거, "설아"는 지시어로 유지)
  */
 const stripSeolaWakeWord = (text: string): string => {
   const stripped = text
     .replace(
-      /^[.,!?~…"''"\s]*(?:설아야?|서라야?|설하야?|소라야?|사라야?|서로야|저라야|바라야|바로야|올아야|수라야|솔아야)[\s,!?~.]*/,
+      /^[.,!?~…"''"\s]*(?:설아야|서라야|설하야|소라야|사라야|서로야|저라야|바라야|바로야|올아야|수라야|솔아야)[\s,!?~.]*/,
       "",
     )
     .replace(
-      /[\s,!?~.]*(?:설아야?|서라야?|설하야?|소라야?|사라야?|서로야|저라야|바라야|바로야|올아야|수라야|솔아야)[.,!?~…"''"\s]*$/,
+      /[\s,!?~.]*(?:설아야|서라야|설하야|소라야|사라야|서로야|저라야|바라야|바로야|올아야|수라야|솔아야)[.,!?~…"''"\s]*$/,
       "",
     )
     .trim();
@@ -1489,6 +1489,11 @@ export const setupVoiceChatListener = (params: {
               actionType: "leave",
               durationSec,
             });
+            await appendConversationContext(
+              userName,
+              transcribedText,
+              "알겠어, 나중에 또 불러줘!",
+            );
             await speakInVoiceChannel(
               connection,
               player,
@@ -1520,6 +1525,11 @@ export const setupVoiceChatListener = (params: {
               actionType: "music_stop",
               durationSec,
             });
+            await appendConversationContext(
+              userName,
+              transcribedText,
+              "응, 노래 껐어!",
+            );
             await speakInVoiceChannel(
               connection,
               player,
@@ -1560,6 +1570,11 @@ export const setupVoiceChatListener = (params: {
                 actionType: "music_play",
                 durationSec,
               });
+              await appendConversationContext(
+                userName,
+                transcribedText,
+                replyText,
+              );
               return;
             } else {
               session.playbackMode = "idle";

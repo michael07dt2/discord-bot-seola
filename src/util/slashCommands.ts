@@ -21,6 +21,7 @@ import {
   PERSONA_DEFINITIONS,
   setUserModel,
   setUserPersona,
+  appendConversationContext,
   type PersonaId,
 } from "./helper.ts";
 import { songMap } from "./songmap.ts";
@@ -515,6 +516,11 @@ export const handleSlashCommand = async (
       if (sub === "set") {
         const type = interaction.options.getString("type", true) as PersonaId;
         const result = await setUserPersona(userName, type);
+        await appendConversationContext(
+          userName,
+          `/persona set type:${type}`,
+          `페르소나가 ${result.persona.name}(으)로 변경되었습니다.`,
+        );
         await interaction.editReply({
           embeds: [
             new EmbedBuilder()
@@ -531,6 +537,11 @@ export const handleSlashCommand = async (
       if (sub === "custom") {
         const prompt = interaction.options.getString("prompt", true);
         await setUserPersona(userName, "custom", prompt);
+        await appendConversationContext(
+          userName,
+          `/persona custom prompt:${prompt}`,
+          "사용자 정의(Custom) 시스템 프롬프트가 설정되었습니다.",
+        );
         await interaction.editReply({
           embeds: [
             new EmbedBuilder()
@@ -571,6 +582,11 @@ export const handleSlashCommand = async (
               notifyDashboardStatusChanged(sharedStatusSnapshotGetter());
             }
           }
+          await appendConversationContext(
+            userName,
+            "/voice join",
+            `${voiceChannel.name} 음성 채널에 입장했습니다.`,
+          );
           await interaction.editReply(
             `🌸 **${voiceChannel.name}** 음성 채널에 설아가 입장했습니다! 이제 자유롭게 말씀해 보세요. (1:1 통화 시 즉시 대화, 다수일 땐 '설아야' 호출)`,
           );
@@ -589,6 +605,11 @@ export const handleSlashCommand = async (
         if (sharedStatusSnapshotGetter) {
           notifyDashboardStatusChanged(sharedStatusSnapshotGetter());
         }
+        await appendConversationContext(
+          userName,
+          "/voice leave",
+          "음성 채널에서 퇴장했습니다.",
+        );
         await interaction.editReply("👋 음성 채널에서 퇴장했습니다. 다음에 또 불러줘!");
         return;
       }
@@ -650,6 +671,11 @@ export const handleSlashCommand = async (
             interaction.guildId,
             text,
           );
+          await appendConversationContext(
+            userName,
+            `/voice speak text:${text}`,
+            text,
+          );
           await interaction.editReply(`🗣️ **${userName}**님의 요청으로 발화했습니다: "${text}"`);
         } catch (err: any) {
           console.error("[SlashCommands] voice speak 실패:", err);
@@ -691,6 +717,11 @@ export const handleSlashCommand = async (
       if (sharedStatusSnapshotGetter) {
         notifyDashboardStatusChanged(sharedStatusSnapshotGetter());
       }
+      await appendConversationContext(
+        userName,
+        `/preset voice:${selected}`,
+        `목소리가 ${updated.label}(${updated.id})로 변경되었습니다.`,
+      );
       await interaction.editReply({
         embeds: [
           new EmbedBuilder()
@@ -736,6 +767,11 @@ export const handleSlashCommand = async (
         const target = interaction.options.getString("name", true);
         const result = await setUserModel(userName, target);
         if (result.success && result.model) {
+          await appendConversationContext(
+            userName,
+            `/model set name:${target}`,
+            `대화 모델이 ${result.model}(으)로 변경되었습니다.`,
+          );
           await interaction.editReply(
             `🤖 **${userName}**님의 대화 모델이 \`${result.model}\`(으)로 변경되었습니다.`,
           );
@@ -775,6 +811,11 @@ export const handleSlashCommand = async (
           sharedAudioPlayer.stop();
         }
         setGuildPlaybackMode(interaction.guildId, "idle");
+        await appendConversationContext(
+          userName,
+          "/music stop",
+          "음악 재생을 중지했습니다.",
+        );
         await interaction.editReply("⏹️ 음악 재생을 중지했습니다.");
         return;
       }
@@ -863,6 +904,11 @@ export const handleSlashCommand = async (
 
           const track = playResult.track;
           const embed = createMusicTrackEmbed(track, userName);
+          await appendConversationContext(
+            userName,
+            `/music play query:${query}`,
+            `🎶 ${track.title} 음악 재생을 시작했습니다.`,
+          );
           await interaction.editReply({ embeds: [embed] });
         } catch (e: any) {
           console.error("음악 재생 연결 실패:", e);
@@ -877,6 +923,11 @@ export const handleSlashCommand = async (
     if (commandName === "search") {
       const query = interaction.options.getString("query", true);
       const result = await performWebSearch(query);
+      await appendConversationContext(
+        userName,
+        `/search query:${query}`,
+        `검색 결과: ${result.slice(0, 300)}`,
+      );
       await interaction.editReply(`🔍 **검색 결과: "${query}"**\n\n${result.slice(0, 1900)}`);
       return;
     }
