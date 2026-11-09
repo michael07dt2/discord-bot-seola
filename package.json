@@ -26,6 +26,7 @@
     "pm2:status": "pm2 status",
     "docker:build": "docker compose build",
     "docker:up": "docker compose up -d",
+    "docker:reload": "docker exec seola-bot pm2 reload seola-bot",
     "docker:down": "docker compose down",
     "docker:logs": "docker compose logs -f"
   },

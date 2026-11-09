@@ -35,4 +35,5 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
-      - ./src/audio:/app/src/audio
+      - ./src:/app/src
+      - ./ecosystem.config.cjs:/app/ecosystem.config.cjs
