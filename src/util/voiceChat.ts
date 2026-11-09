@@ -1044,7 +1044,8 @@ export const createSentenceSpeechPipeline = (
   guildId: string,
   options?: { maxSentences?: number },
 ) => {
-  const synthesisQueue: Promise<SynthesizedSpeechResource | null>[] = [];
+  // 고부하 신경망 TTS(CosyVoice)의 병렬 폭주 및 소켓 타임아웃을 방지하기 위해 작업 함수 큐로 순차 처리
+  const synthesisQueue: (() => Promise<SynthesizedSpeechResource | null>)[] = [];
   // 답변 받은 문장을 도중에 자르지 않고 온전히 모두 발화하도록 기본값을 무제한(Infinity)으로 설정
   const maxSentences = options?.maxSentences ?? Infinity;
   let enqueuedSentenceCount = 0;
@@ -1072,7 +1073,8 @@ export const createSentenceSpeechPipeline = (
         }
 
         const nextSynthTask = synthesisQueue.shift()!;
-        const ttsResult = await nextSynthTask;
+        // 순차적으로 다음 문장을 합성하여 서버 부하 및 소켓 드랍 방지
+        const ttsResult = await nextSynthTask();
         if (!ttsResult) continue;
 
         if (!hasStartedPlayback) {
@@ -1127,11 +1129,12 @@ export const createSentenceSpeechPipeline = (
       }
       enqueuedSentenceCount++;
 
-      const synthPromise = synthesizeSpeechResource(sentence).catch((err) => {
-        console.error("[VoiceChat] 문장 합성 오류:", err);
-        return null;
-      });
-      synthesisQueue.push(synthPromise);
+      const synthTask = () =>
+        synthesizeSpeechResource(sentence).catch((err) => {
+          console.error("[VoiceChat] 문장 합성 오류:", err);
+          return null;
+        });
+      synthesisQueue.push(synthTask);
     }
     notifyQueueUpdated();
   };
