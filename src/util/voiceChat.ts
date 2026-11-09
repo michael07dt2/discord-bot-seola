@@ -931,7 +931,8 @@ const isMeaningfulTranscription = (text: string): boolean => {
  * TTS가 어색하게 읽지 않도록 텍스트 정리 (괄호 지문/부연설명, 자음 이모티콘, 마크다운 기호 등 제거)
  */
 const cleanTextForTTS = (text: string): string => {
-  let cleaned = text
+  // macOS NFD(자소 분리: ᄌ-ㅓ-ㄴ-ㅡ-ㄴ) 유니코드를 표준 NFC(완성형: 저는)로 정규화
+  let cleaned = text.normalize("NFC")
     // 코드 블록 및 인라인 코드 기호 제거
     .replace(/```[\s\S]*?```/g, "")
     .replace(/`([^`]+)`/g, "$1")

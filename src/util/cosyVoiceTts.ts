@@ -77,7 +77,7 @@ const doSynthesizeCosyVoiceSentence = async (
   rawText: string,
   options?: CosyVoiceOptions,
 ): Promise<CosyVoiceResult | null> => {
-  const text = rawText.trim();
+  const text = rawText.normalize("NFC").trim();
   if (!text) return null;
 
   const baseUrl = CONFIG.COSYVOICE_API_URL.replace(/\/+$/, "");
