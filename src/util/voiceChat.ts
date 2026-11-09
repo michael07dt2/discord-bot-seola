@@ -914,31 +914,39 @@ export const synthesizeSpeechResource = async (
 
   // 0차: 로컬 CosyVoice 대규모 신경망 엔진 (상위 디렉터리 CosyVoice Gradio 5.x WebUI 연동)
   if (preset.engine === "cosyvoice") {
-    try {
-      const isAvailable = await isCosyVoiceAvailable();
-      if (!isAvailable) {
-        console.warn(
-          `[VoiceChat] CosyVoice 서버(${CONFIG.COSYVOICE_API_URL})가 응답하지 않아 MeloTTS로 폴백합니다.`,
-        );
-      } else {
-        const cosyResult = await synthesizeCosyVoiceSentence(speakableText, {
-          speed: preset.cosySpeed ?? 1.0,
-          mode: preset.cosyMode || CONFIG.COSYVOICE_MODE,
-          promptText: CONFIG.COSYVOICE_PROMPT_TEXT,
-          promptWavPath: CONFIG.COSYVOICE_PROMPT_WAV,
-        });
-        if (cosyResult) {
-          return {
-            streamOrPath: cosyResult.stream,
-            inputType: StreamType.Arbitrary,
-          };
-        }
-      }
-    } catch (cosyError) {
-      console.warn(
-        "[VoiceChat] CosyVoice 합성 실패, MeloTTS로 폴백합니다:",
-        cosyError,
+    // CosyVoice3 모델의 CausalConv1d 커널 크기(4) 제약으로 인해 18자 미만 극단문은
+    // 런타임 에러를 방지하고 반응성을 위해 MeloTTS로 안전하게 직결 처리
+    if (speakableText.length < 18) {
+      console.log(
+        `[VoiceChat] 💡 18자 미만 단문("${speakableText}")은 CausalConv1d 커널 제약 방지를 위해 MeloTTS로 안전하게 처리합니다.`,
       );
+    } else {
+      try {
+        const isAvailable = await isCosyVoiceAvailable();
+        if (!isAvailable) {
+          console.warn(
+            `[VoiceChat] CosyVoice 서버(${CONFIG.COSYVOICE_API_URL})가 응답하지 않아 MeloTTS로 폴백합니다.`,
+          );
+        } else {
+          const cosyResult = await synthesizeCosyVoiceSentence(speakableText, {
+            speed: preset.cosySpeed ?? 1.0,
+            mode: preset.cosyMode || CONFIG.COSYVOICE_MODE,
+            promptText: CONFIG.COSYVOICE_PROMPT_TEXT,
+            promptWavPath: CONFIG.COSYVOICE_PROMPT_WAV,
+          });
+          if (cosyResult) {
+            return {
+              streamOrPath: cosyResult.stream,
+              inputType: StreamType.Arbitrary,
+            };
+          }
+        }
+      } catch (cosyError) {
+        console.warn(
+          "[VoiceChat] CosyVoice 합성 실패, MeloTTS로 폴백합니다:",
+          cosyError,
+        );
+      }
     }
   }
 
@@ -1033,6 +1041,42 @@ export const synthesizeSpeechResource = async (
 };
 
 /**
+ * TTS 엔진별 특성에 맞춰 문장을 최적 길이 단위로 묶음(Chunking)
+ * - CosyVoice3는 CausalConv1d 커널 크기(4) 제약으로 인해 너무 짧은 문장에서 에러가 발생하므로 20자 이상으로 자연스럽게 결합
+ */
+export const groupSentencesForTTS = (
+  sentences: string[],
+  minLength = 20,
+): string[] => {
+  const result: string[] = [];
+  let buffer = "";
+
+  for (const s of sentences) {
+    const trimmed = s.trim();
+    if (!trimmed) continue;
+
+    if (!buffer) {
+      buffer = trimmed;
+    } else if (buffer.length < minLength) {
+      buffer = `${buffer} ${trimmed}`;
+    } else {
+      result.push(buffer);
+      buffer = trimmed;
+    }
+  }
+
+  if (buffer) {
+    if (buffer.length < minLength && result.length > 0) {
+      result[result.length - 1] = `${result[result.length - 1]} ${buffer}`;
+    } else {
+      result.push(buffer);
+    }
+  }
+
+  return result;
+};
+
+/**
  * 문장 단위 스트리밍 합성 및 순차 재생 파이프라인 생성
  * - 문장이 들어오는 즉시 백그라운드에서 MeloTTS-Korean 합성을 선행(Prefetch) 시작하고,
  *   첫 문장 합성이 완료되는 즉시 AudioPlayer에서 재생을 시작하여 체감 지연시간을 최소화합니다.
@@ -1120,8 +1164,10 @@ export const createSentenceSpeechPipeline = (
     const cleaned = cleanTextForTTS(rawSentence);
     if (!cleaned) return;
 
-    // 한 번에 여러 문장이 들어온 경우에도 문장 단위로 쪼개어 순차 합성 큐에 등록
-    const subSentences = splitTextIntoSentences(cleaned);
+    // 한 번에 여러 문장이 들어온 경우에도 문장 단위로 쪼갠 뒤 너무 짧은 문장은 결합하여 합성 큐에 등록
+    const rawSubSentences = splitTextIntoSentences(cleaned);
+    const subSentences = groupSentencesForTTS(rawSubSentences, 20);
+
     for (const sentence of subSentences) {
       if (!sentence) continue;
       if (enqueuedSentenceCount >= maxSentences) {
