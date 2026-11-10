@@ -422,7 +422,7 @@ export const handlePrefixCommand = async (
       notifyDashboardStatusChanged(getDashboardStatusSnapshot());
 
       await message.reply(
-        `음성 채널에 연결되었습니다! 이제 마이크에 대고 말씀하시면 실시간으로 대화할 수 있어요.\n*(음성 대화록은 채팅창 대신 대시보드에만 표시됩니다: ${dashboardUrl})*`,
+        `음성 채널에 연결되었습니다! 이제 마이크에 대고 말씀하시면 실시간으로 대화할 수 있어요.`,
       );
       await appendConversationContext(
         getUserKey(message),
