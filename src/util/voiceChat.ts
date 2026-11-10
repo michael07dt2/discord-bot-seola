@@ -88,6 +88,9 @@ export interface VoicePreset {
   meloSdpRatio?: number;
   cosySpeed?: number;
   cosyMode?: "3초 음성 복제" | "교차 언어 복제" | "자연어 지시 제어" | "사전 학습 음색";
+  cosyPromptWav?: string;
+  cosyPromptText?: string;
+  cosyInstructText?: string;
   qwenMode?: "clone" | "custom";
   qwenSpeaker?: string;
   qwenInstruct?: string;
@@ -136,6 +139,34 @@ export const VOICE_PRESETS: Record<string, VoicePreset> = {
     cosySpeed: 1.0,
     cosyMode: CONFIG.COSYVOICE_MODE,
     voiceName: "cosy-custom",
+    voiceLocale: "ko-KR",
+    pitch: "+0Hz",
+    rate: "+0%",
+  },
+  reva: {
+    id: "reva",
+    label: "레바 (유튜브 스트리머 레바 음성 복제)",
+    description: "재치있고 시니컬한 드로잉 스트리머 레바의 보이스 (CosyVoice)",
+    engine: "cosyvoice",
+    cosySpeed: 1.0,
+    cosyMode: "3초 음성 복제",
+    cosyPromptWav: "/Users/micha/Projects/personal_projects/CosyVoice/asset/youtube_prompt.wav",
+    cosyPromptText: "확실히 요새 좀 옛날보단 그림에 대한 상상력이 줄어든 것 같아요.".normalize("NFC"),
+    voiceName: "reva-custom",
+    voiceLocale: "ko-KR",
+    pitch: "+0Hz",
+    rate: "+0%",
+  },
+  gamgyuri: {
+    id: "gamgyuri",
+    label: "감규리 (유튜브 감규리 음성 복제)",
+    description: "발랄하고 귀여운 게이머 감규리의 보이스 (CosyVoice)",
+    engine: "cosyvoice",
+    cosySpeed: 1.0,
+    cosyMode: "3초 음성 복제",
+    cosyPromptWav: "/Users/micha/Projects/personal_projects/CosyVoice/asset/youtube_prompt_307_318.wav",
+    cosyPromptText: "자 이렇게 오늘의 게임 마무리해보도록 하겠습니다. 어쩐지 뭐 얼마 안 한 거 같은데 여기 다 온 거 같지?".normalize("NFC"),
+    voiceName: "gamgyuri-custom",
     voiceLocale: "ko-KR",
     pitch: "+0Hz",
     rate: "+0%",
@@ -350,6 +381,12 @@ export const setVoicePreset = async (
     qwen: "qwen",
     큐웬: "qwen",
     qwen3: "qwen",
+    reva: "reva",
+    레바: "reva",
+    gamgyuri: "gamgyuri",
+    감규리: "gamgyuri",
+    규리: "gamgyuri",
+    gyuri: "gamgyuri",
   };
 
   const resolvedKey = aliasMap[key] || (VOICE_PRESETS[key] ? key : undefined);
@@ -1148,9 +1185,12 @@ export const synthesizeSpeechResource = async (
           const cosyResult = await synthesizeCosyVoiceSentence(speakableText, {
             speed: preset.cosySpeed ?? 1.0,
             mode: "3초 음성 복제",
-            promptText: CONFIG.COSYVOICE_PROMPT_TEXT,
-            promptWavPath: CONFIG.COSYVOICE_PROMPT_WAV,
-            instructText: CONFIG.COSYVOICE_INSTRUCT_TEXT,
+            promptText: preset.cosyPromptText || CONFIG.COSYVOICE_PROMPT_TEXT,
+            promptWavPath: preset.cosyPromptWav || CONFIG.COSYVOICE_PROMPT_WAV,
+            instructText:
+              preset.cosyInstructText !== undefined
+                ? preset.cosyInstructText
+                : CONFIG.COSYVOICE_INSTRUCT_TEXT,
           });
           if (cosyResult) {
             return {
@@ -1194,9 +1234,12 @@ export const synthesizeSpeechResource = async (
         const cosyResult = await synthesizeCosyVoiceSentence(speakableText, {
           speed: preset.cosySpeed ?? 1.0,
           mode: preset.cosyMode || CONFIG.COSYVOICE_MODE,
-          promptText: CONFIG.COSYVOICE_PROMPT_TEXT,
-          promptWavPath: CONFIG.COSYVOICE_PROMPT_WAV,
-          instructText: CONFIG.COSYVOICE_INSTRUCT_TEXT,
+          promptText: preset.cosyPromptText || CONFIG.COSYVOICE_PROMPT_TEXT,
+          promptWavPath: preset.cosyPromptWav || CONFIG.COSYVOICE_PROMPT_WAV,
+          instructText:
+            preset.cosyInstructText !== undefined
+              ? preset.cosyInstructText
+              : CONFIG.COSYVOICE_INSTRUCT_TEXT,
         });
         if (cosyResult) {
           return {
