@@ -173,8 +173,8 @@ export const VOICE_PRESETS: Record<string, VoicePreset> = {
   },
   myoya: {
     id: "myoya",
-    label: "묘야 (유튜브 묘야 Qwen3-TTS 복제)",
-    description: "동화공방 묘야의 다정하고 나긋나긋한 신경망 복제 보이스 (Qwen3-TTS)",
+    label: "다시는 만날 수 없는 (Qwen3-TTS 신경망 복제)",
+    description: "다시는 만날 수 없는 그 사람의 다정하고 나긋나긋한 신경망 복제 보이스 (Qwen3-TTS)",
     engine: "qwen",
     qwenMode: "clone",
     qwenRefAudio: "/Users/micha/Projects/personal_projects/qwen3-tts-mlx/samples/youtube_myoya.wav",
@@ -190,8 +190,8 @@ export const VOICE_PRESETS: Record<string, VoicePreset> = {
   },
   myoya_cosy: {
     id: "myoya_cosy",
-    label: "묘야 (유튜브 묘야 CosyVoice 복제)",
-    description: "동화공방 묘야의 다정하고 나긋나긋한 음성 복제 보이스 (CosyVoice)",
+    label: "다시는 만날 수 없는 (CosyVoice 음성 복제)",
+    description: "다시는 만날 수 없는 그 사람의 다정하고 나긋나긋한 음성 복제 보이스 (CosyVoice)",
     engine: "cosyvoice",
     cosySpeed: 1.0,
     cosyMode: "3초 음성 복제",
@@ -421,9 +421,15 @@ export const setVoicePreset = async (
     myoya: "myoya",
     묘야: "myoya",
     묘야큐웬: "myoya",
+    "다시는 만날 수 없는": "myoya",
+    "다시는만날수없는": "myoya",
+    "다만없": "myoya",
     myoya_cosy: "myoya_cosy",
     myoyacosy: "myoya_cosy",
     묘야코지: "myoya_cosy",
+    "다시는 만날 수 없는 코지": "myoya_cosy",
+    "다시는만날수없는코지": "myoya_cosy",
+    "다만없코지": "myoya_cosy",
   };
 
   const resolvedKey = aliasMap[key] || (VOICE_PRESETS[key] ? key : undefined);

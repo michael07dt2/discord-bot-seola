@@ -273,19 +273,25 @@
           </div>
         </div>
 
-        <!-- 목소리(MeloTTS) 설정 -->
+        <!-- 목소리 프리셋 설정 -->
         <div class="control-card">
-          <label>🗣️ 목소리 프리셋 (MeloTTS-Korean)</label>
+          <label>🗣️ 목소리 프리셋 (TTS 엔진)</label>
           <div class="control-row">
             <select id="presetSelect">
-              <option value="seola">🌸 설아 (시그니처 기본톤)</option>
+              <option value="seola">🌸 설아 (시그니처 기본톤, MeloTTS)</option>
+              <option value="kei">🤖 케이 (블루아카이브 KEY Qwen3-TTS)</option>
+              <option value="qwen">⚡ 큐웬 (Qwen3-TTS MLX 신경망)</option>
+              <option value="cosy">🔮 코지 (CosyVoice 기본 신경망)</option>
+              <option value="reva">🎨 레바 (유튜브 스트리머 레바 CosyVoice)</option>
+              <option value="gamgyuri">🍊 감규리 (유튜브 감규리 CosyVoice)</option>
+              <option value="myoya">🐱 다시는 만날 수 없는 (Qwen3-TTS)</option>
+              <option value="myoya_cosy">🎨 다시는 만날 수 없는 (CosyVoice)</option>
               <option value="lively">✨ 발랄 (톤 업, 귀엽고 밝은 어투)</option>
               <option value="calm">☕ 차분 (성숙하고 따뜻한 중저음)</option>
               <option value="whisper">🌙 속삭임 (나직하고 포근한 톤)</option>
               <option value="melo">🎙️ 멜로 (중립 원음 기준)</option>
               <option value="ava">💎 아바 (Edge 다국어 음성)</option>
               <option value="sunhi">🎀 선희 (Edge 한국어 음성)</option>
-              <option value="cosy">🔮 코지 (CosyVoice 3 신경망 음성)</option>
             </select>
             <button class="btn btn-primary" id="applyPresetBtn">변경</button>
           </div>
