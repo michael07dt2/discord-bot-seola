@@ -171,6 +171,37 @@ export const VOICE_PRESETS: Record<string, VoicePreset> = {
     pitch: "+0Hz",
     rate: "+0%",
   },
+  myoya: {
+    id: "myoya",
+    label: "묘야 (유튜브 묘야 Qwen3-TTS 복제)",
+    description: "동화공방 묘야의 다정하고 나긋나긋한 신경망 복제 보이스 (Qwen3-TTS)",
+    engine: "qwen",
+    qwenMode: "clone",
+    qwenRefAudio: "/Users/micha/Projects/personal_projects/qwen3-tts-mlx/samples/youtube_myoya.wav",
+    qwenRefText: "길드 이름을 동화공방으로 지은 배경이 혹시 있으실까요? 저게 원래요 완전 방송 초창기 때 제 블로그 이름이었어요. 약간 동화책 같은 그림을 그리는 작업실 같은 느낌으로 만든 거예요. 제가 원래 그림으로 방송을 시작했었단 말이죠. 근데 애니메이션 제작사가 있더라고요. 엄청 유명한. 그 당시만 해도 그림 유튜버였는데".normalize("NFC"),
+    cosySpeed: 1.0,
+    cosyMode: "3초 음성 복제",
+    cosyPromptWav: "/Users/micha/Projects/personal_projects/CosyVoice/asset/youtube_myoya.wav",
+    cosyPromptText: "길드 이름을 동화공방으로 지은 배경이 혹시 있으실까요? 저게 원래요 완전 방송 초창기 때 제 블로그 이름이었어요. 약간 동화책 같은 그림을 그리는 작업실 같은 느낌으로 만든 거예요. 제가 원래 그림으로 방송을 시작했었단 말이죠. 근데 애니메이션 제작사가 있더라고요. 엄청 유명한. 그 당시만 해도 그림 유튜버였는데".normalize("NFC"),
+    voiceName: "myoya-qwen",
+    voiceLocale: "ko-KR",
+    pitch: "+0Hz",
+    rate: "+0%",
+  },
+  myoya_cosy: {
+    id: "myoya_cosy",
+    label: "묘야 (유튜브 묘야 CosyVoice 복제)",
+    description: "동화공방 묘야의 다정하고 나긋나긋한 음성 복제 보이스 (CosyVoice)",
+    engine: "cosyvoice",
+    cosySpeed: 1.0,
+    cosyMode: "3초 음성 복제",
+    cosyPromptWav: "/Users/micha/Projects/personal_projects/CosyVoice/asset/youtube_myoya.wav",
+    cosyPromptText: "길드 이름을 동화공방으로 지은 배경이 혹시 있으실까요? 저게 원래요 완전 방송 초창기 때 제 블로그 이름이었어요. 약간 동화책 같은 그림을 그리는 작업실 같은 느낌으로 만든 거예요. 제가 원래 그림으로 방송을 시작했었단 말이죠. 근데 애니메이션 제작사가 있더라고요. 엄청 유명한. 그 당시만 해도 그림 유튜버였는데".normalize("NFC"),
+    voiceName: "myoya-cosy",
+    voiceLocale: "ko-KR",
+    pitch: "+0Hz",
+    rate: "+0%",
+  },
   seola: {
     id: "seola",
     label: "설아 (MeloTTS 자연스러운 기본)",
@@ -387,6 +418,12 @@ export const setVoicePreset = async (
     감규리: "gamgyuri",
     규리: "gamgyuri",
     gyuri: "gamgyuri",
+    myoya: "myoya",
+    묘야: "myoya",
+    묘야큐웬: "myoya",
+    myoya_cosy: "myoya_cosy",
+    myoyacosy: "myoya_cosy",
+    묘야코지: "myoya_cosy",
   };
 
   const resolvedKey = aliasMap[key] || (VOICE_PRESETS[key] ? key : undefined);
@@ -1180,8 +1217,11 @@ export const synthesizeSpeechResource = async (
         console.warn(
           `[VoiceChat] Qwen3-TTS 서버(${CONFIG.QWEN_TTS_API_URL})가 응답하지 않아 CosyVoice/MeloTTS로 폴백합니다.`,
         );
-        // 케이 프리셋인 경우 CosyVoice 서버 가용 여부 확인 후 CosyVoice로 시도
-        if (preset.id === "kei" && (await isCosyVoiceAvailable())) {
+        // CosyVoice 프롬프트가 설정된 프리셋(케이, 묘야 등)인 경우 CosyVoice 서버 가용 여부 확인 후 CosyVoice로 시도
+        if (
+          (preset.cosyPromptWav || preset.id === "kei") &&
+          (await isCosyVoiceAvailable())
+        ) {
           const cosyResult = await synthesizeCosyVoiceSentence(speakableText, {
             speed: preset.cosySpeed ?? 1.0,
             mode: "3초 음성 복제",
