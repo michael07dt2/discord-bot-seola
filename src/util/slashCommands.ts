@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   ChatInputCommandInteraction,
   Client,
@@ -68,6 +69,7 @@ import {
   type DashboardStatusSnapshot,
 } from "./dashboard.ts";
 import { getGuildAudioPlayer } from "./audioPlayer.ts";
+import { getBotSetting, setBotSetting } from "./settings.ts";
 
 // index.ts로부터 공유받을 런타임 의존성 (대시보드 스냅샷 헬퍼)
 let sharedStatusSnapshotGetter: (() => DashboardStatusSnapshot) | null = null;
@@ -511,7 +513,7 @@ export const slashCommands = [
     .setDescription("설아 봇의 전체 기능과 슬래시 명령어 안내를 확인합니다."),
 ];
 
-// 디스코드 API에 슬래시 명령어 등록
+// 디스코드 API에 슬래시 명령어 등록 (변경 감지 시에만 PUT 요청하여 불필요한 버전 갱신 및 outdated 에러 방지)
 export const registerSlashCommands = async (client: Client): Promise<void> => {
   const token = CONFIG.DISCORD_TOKEN;
   const appId = CONFIG.APP_ID || client.user?.id;
@@ -524,9 +526,20 @@ export const registerSlashCommands = async (client: Client): Promise<void> => {
   }
 
   try {
-    const rest = new REST({ version: "10" }).setToken(token);
     const commandsJson = slashCommands.map((cmd) => cmd.toJSON());
+    const currentHash = createHash("sha256")
+      .update(JSON.stringify(commandsJson))
+      .digest("hex");
 
+    const savedHash = await getBotSetting("slash_commands_hash").catch(() => null);
+    if (savedHash === currentHash) {
+      console.log(
+        `[SlashCommands] 명령어 스키마 변경 없음 (${commandsJson.length}개 유지) — API 재등록 건너뜀`,
+      );
+      return;
+    }
+
+    const rest = new REST({ version: "10" }).setToken(token);
     console.log(`[SlashCommands] 총 ${commandsJson.length}개의 슬래시 명령어 등록을 시작합니다...`);
 
     // 글로벌 명령어 등록 (전체 길드 적용)
@@ -534,6 +547,7 @@ export const registerSlashCommands = async (client: Client): Promise<void> => {
       body: commandsJson,
     });
 
+    await setBotSetting("slash_commands_hash", currentHash).catch(() => {});
     console.log(`[SlashCommands] 총 ${commandsJson.length}개의 슬래시 명령어가 성공적으로 등록되었습니다!`);
   } catch (error) {
     console.error("[SlashCommands] 슬래시 명령어 등록 중 오류 발생:", error);
