@@ -326,12 +326,13 @@
             </select>
             <input type="text" id="songCustomInput" placeholder="유튜브 곡명 또는 URL 입력..." style="flex: 1.5; min-width: 180px; padding: 7px 12px; background: rgba(0,0,0,0.3); border: 1px solid var(--border); border-radius: 8px; color: var(--text-primary); font-size: 13px;" />
             <button class="btn btn-primary" id="playMusicBtn">재생</button>
+            <button class="btn btn-secondary" id="skipMusicBtn">⏭️ 다음곡</button>
             <button class="btn btn-secondary" id="stopMusicBtn">정지</button>
           </div>
           <div class="control-row" style="margin-top: 6px; align-items: center; gap: 10px;">
             <span style="font-size: 12px; color: var(--text-secondary); white-space: nowrap;">🔊 음악 볼륨:</span>
-            <input type="range" id="volumeSlider" min="0" max="100" value="35" style="flex: 1; accent-color: var(--accent); cursor: pointer;" />
-            <span id="volumeVal" style="font-size: 12px; font-weight: 700; color: var(--accent); min-width: 36px;">35%</span>
+            <input type="range" id="volumeSlider" min="0" max="100" value="20" style="flex: 1; accent-color: var(--accent); cursor: pointer;" />
+            <span id="volumeVal" style="font-size: 12px; font-weight: 700; color: var(--accent); min-width: 36px;">20%</span>
           </div>
         </div>
       </div>
@@ -646,6 +647,16 @@
         btn.disabled = false;
         btn.textContent = "재생";
       }
+    });
+
+    document.getElementById("skipMusicBtn").addEventListener("click", async () => {
+      const guildId = activeSessions[0]?.guildId;
+      if (!guildId) return;
+      await fetch("/api/control/music", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ guildId, action: "skip" }),
+      });
     });
 
     document.getElementById("stopMusicBtn").addEventListener("click", async () => {

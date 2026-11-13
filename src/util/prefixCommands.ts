@@ -35,6 +35,9 @@ import {
   createMusicTrackEmbed,
   getGuildMusicVolumePercent,
   setGuildMusicVolume,
+  getGuildMusicQueue,
+  skipGuildMusic,
+  clearGuildMusicQueue,
 } from "./youtubeMusic.ts";
 import {
   getBotStatusReport,
@@ -163,10 +166,14 @@ export const handlePrefixCommand = async (
           ].join("\n"),
         },
         {
-          name: "🎵 음악 재생 (텍스트 및 음성 명령 모두 가능)",
+          name: "🎵 음악 재생 및 대기열 (텍스트 및 음성 명령 모두 가능)",
           value: [
-            "`설아야 <곡명> 틀어줘` — 지정한 곡 재생 *(음성으로 \"<곡명> 틀어줘\" 가능)*",
-            "`!volume <0~100>` 또는 `!볼륨 <수치>` — 음악 재생 음량 조절 *(기본 35%)*",
+            "`!play <곡명/링크>` / `설아야 <곡명> 틀어줘` — 음악 재생 *(재생 중이면 대기열 추가)*",
+            "`!queue` / `!대기열` / `설아야 대기열` — 현재 재생 곡 및 대기열 목록 확인",
+            "`!skip` / `!스킵` / `설아야 다음곡` — 다음 곡으로 건너뛰기",
+            "`!clearqueue` / `!대기열비우기` — 대기열 비우기",
+            "`!volume <0~100>` 또는 `!볼륨 <수치>` — 음악 재생 음량 조절 *(기본 20%)*",
+            "`!stop` / `설아야 노래 꺼줘` — 음악 및 대기열 중지",
             "지원 곡 키워드: `아리아`, `어웨이크`, `브레이크 더 체인`, `크레이지`, `리다인`, `노 머시`, `세컨드 라이트`, `댓 걸`, `바토리`, `미래소녀`",
           ].join("\n"),
         },
@@ -481,6 +488,100 @@ export const handlePrefixCommand = async (
     }
   }
 
+  // 음악 다음 곡 건너뛰기(스킵) 프리픽스 명령
+  if (
+    /^(!skip|!스킵|!다음곡|!넘겨|설아야?\s*(?:노래\s*|음악\s*)?(?:스킵|다음\s*곡|넘겨)(?:해\s*줘|줘)?)$/i.test(
+      message.content.trim(),
+    )
+  ) {
+    const guildId = message.guild?.id;
+    if (guildId) {
+      const guildPlayer = getGuildAudioPlayer(guildId);
+      const skipResult = await skipGuildMusic(guildId, guildPlayer);
+      if (!skipResult.skipped && !skipResult.nextTrack) {
+        await message.reply("⏭️ 현재 재생 중인 음악이 없습니다.");
+        return;
+      }
+      if (skipResult.nextTrack) {
+        setGuildPlaybackMode(guildId, "music");
+        const embed = createMusicTrackEmbed(
+          skipResult.nextTrack,
+          getUserKey(message),
+          guildId,
+        );
+        await message.reply({
+          content: `⏭️ **${skipResult.skipped?.title || "이전 곡"}**을(를) 건너뛰고 다음 곡을 재생합니다! (남은 대기열: ${skipResult.remainingQueue}곡)`,
+          embeds: [embed],
+        });
+      } else {
+        setGuildPlaybackMode(guildId, "idle");
+        await message.reply(
+          `⏭️ **${skipResult.skipped?.title || "현재 곡"}**을(를) 건너뛰었습니다. 대기열에 남은 곡이 없어 재생을 마칩니다.`,
+        );
+      }
+      return;
+    }
+  }
+
+  // 음악 대기열 조회 프리픽스 명령
+  if (
+    /^(!queue|!큐|!대기열|설아야?\s*(?:노래\s*|음악\s*)?(?:대기열|큐)(?:\s*보여줘|\s*알려줘)?)$/i.test(
+      message.content.trim(),
+    )
+  ) {
+    const guildId = message.guild?.id;
+    if (guildId) {
+      const currentSession = getGuildCurrentTrack(guildId);
+      const queue = getGuildMusicQueue(guildId);
+      if (!currentSession && queue.length === 0) {
+        await message.reply("📜 현재 재생 중인 곡과 대기열이 모두 비어 있습니다.");
+        return;
+      }
+      const nowText = currentSession
+        ? `🎶 **현재 재생 중**: ${currentSession.track.title}${currentSession.requesterName ? ` *(신청: ${currentSession.requesterName})*` : ""}`
+        : "🎶 **현재 재생 중**: 없음";
+      const queueLines =
+        queue.length > 0
+          ? queue
+              .slice(0, 15)
+              .map(
+                (item, idx) =>
+                  `**${idx + 1}.** ${item.track.title}${item.track.isLocal ? " *(로컬)*" : ` (${item.track.formattedDuration})`}${item.requesterName ? ` — ${item.requesterName}` : ""}`,
+              )
+              .join("\n") +
+            (queue.length > 15 ? `\n... 외 ${queue.length - 15}곡` : "")
+          : "대기열에 예약된 곡이 없습니다.";
+      await message.reply({
+        embeds: [
+          new EmbedBuilder()
+            .setColor(0x5865f2)
+            .setTitle(`📜 음악 대기열 (${queue.length}곡 대기 중)`)
+            .setDescription(`${nowText}\n\n**다음 대기 곡**\n${queueLines}`)
+            .setFooter({ text: "스킵: !skip • 비우기: !clearqueue" }),
+        ],
+      });
+      return;
+    }
+  }
+
+  // 음악 대기열 비우기 프리픽스 명령
+  if (
+    /^(!clearqueue|!대기열비우기|!큐비우기|설아야?\s*(?:대기열|큐)\s*(?:비워줘|초기화|삭제))$/i.test(
+      message.content.trim(),
+    )
+  ) {
+    const guildId = message.guild?.id;
+    if (guildId) {
+      const count = clearGuildMusicQueue(guildId);
+      await message.reply(
+        count > 0
+          ? `🗑️ 음악 대기열에서 **${count}곡**을 모두 비웠습니다.`
+          : "📜 이미 음악 대기열이 비어 있습니다.",
+      );
+      return;
+    }
+  }
+
   // 음악 중지 프리픽스 명령
   if (
     message.content === "설아야 노래 꺼" ||
@@ -562,10 +663,16 @@ export const handlePrefixCommand = async (
         player: getGuildAudioPlayer(voiceChannel.guild.id),
         connection,
         requesterName: message.member?.displayName || message.author.username,
+        onQueueEnd: () => {
+          setGuildPlaybackMode(voiceChannel.guild.id, "idle");
+          notifyDashboardStatusChanged(getDashboardStatusSnapshot());
+        },
       });
 
       if (!result.success || !result.track) {
-        setGuildPlaybackMode(voiceChannel.guild.id, "idle");
+        if (!getGuildCurrentTrack(voiceChannel.guild.id)) {
+          setGuildPlaybackMode(voiceChannel.guild.id, "idle");
+        }
         await loadingMsg.edit(
           `❌ ${result.errorMessage || "음악을 재생할 수 없습니다."}`,
         );
@@ -576,17 +683,30 @@ export const handlePrefixCommand = async (
       const embed = createMusicTrackEmbed(
         track,
         message.member?.displayName || message.author.username,
+        voiceChannel.guild.id,
+        result.queued
+          ? {
+              queued: true,
+              ...(result.queuePosition !== undefined
+                ? { queuePosition: result.queuePosition }
+                : {}),
+            }
+          : undefined,
       );
       await appendConversationContext(
         getUserKey(message),
         message.content,
-        `🎶 ${track.title} 음악 재생을 시작했습니다.`,
+        result.queued
+          ? `📜 대기열 #${result.queuePosition}번에 ${track.title} 곡을 추가했습니다.`
+          : `🎶 ${track.title} 음악 재생을 시작했습니다.`,
       );
       await loadingMsg.edit({ content: null, embeds: [embed] });
       return;
     } catch (error: any) {
       console.error("오디오 리소스 생성 실패:", error);
-      setGuildPlaybackMode(voiceChannel.guild.id, "idle");
+      if (!getGuildCurrentTrack(voiceChannel.guild.id)) {
+        setGuildPlaybackMode(voiceChannel.guild.id, "idle");
+      }
       await loadingMsg.edit("오디오를 재생하는 중 오류가 발생했습니다.");
       return;
     }

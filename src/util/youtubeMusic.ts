@@ -52,14 +52,22 @@ export interface GuildMusicSession {
   resource?: AudioResource<any> | undefined;
 }
 
+export interface QueuedMusicItem {
+  track: MusicTrackInfo;
+  requesterName?: string | undefined;
+  addedAt: Date;
+}
+
 export interface PlayMusicResult {
   success: boolean;
   track?: MusicTrackInfo;
+  queued?: boolean;
+  queuePosition?: number;
   errorMessage?: string;
 }
 
-// 기본 음악 볼륨 (기존 100%는 너무 크므로 편안한 35%로 기본 조정)
-export const DEFAULT_MUSIC_VOLUME_PERCENT = 35;
+// 기본 음악 볼륨 (기존 100%는 너무 크므로 편안한 20%로 기본 조정)
+export const DEFAULT_MUSIC_VOLUME_PERCENT = 20;
 
 // 길드별 음악 볼륨 (0 ~ 100 퍼센트)
 const guildMusicVolumeMap = new Map<string, number>();
@@ -131,6 +139,19 @@ export const initGuildMusicVolume = async (guildId: string): Promise<number> => 
 
 // 길드별 현재 재생 중인 음악 상태 및 백그라운드 프로세스 관리
 const activeGuildMusicSessions = new Map<string, GuildMusicSession>();
+// 길드별 재생 대기열(Queue)
+const guildMusicQueues = new Map<string, QueuedMusicItem[]>();
+// 길드별 플레이어 바인딩 및 자동 다음 곡 전환 중복 방지용 Set
+const guildPlayerBindings = new Map<
+  string,
+  {
+    player: AudioPlayer;
+    connection?: VoiceConnection | undefined;
+    onQueueEnd?: (() => void) | undefined;
+  }
+>();
+const hookedPlayers = new WeakSet<AudioPlayer>();
+const transitioningGuilds = new Set<string>();
 
 /**
  * 초 단위 숫자를 "mm:ss" 또는 "hh:mm:ss" 포맷으로 변환
@@ -205,8 +226,12 @@ export const searchYouTubeTrack = async (
 
 /**
  * 길드의 이전 유튜브 음악 프로세스 종료 및 세션 정리
+ * (기본적으로 대기열도 함께 비우며, 스킵/다음곡 전환 시 clearQueue: false 전달)
  */
-export const stopGuildMusic = (guildId: string): void => {
+export const stopGuildMusic = (
+  guildId: string,
+  options?: { clearQueue?: boolean },
+): void => {
   const session = activeGuildMusicSessions.get(guildId);
   if (session?.subprocess) {
     try {
@@ -216,6 +241,41 @@ export const stopGuildMusic = (guildId: string): void => {
     }
   }
   activeGuildMusicSessions.delete(guildId);
+  if (options?.clearQueue !== false) {
+    guildMusicQueues.delete(guildId);
+  }
+};
+
+/**
+ * 길드의 현재 음악 대기열 목록 조회
+ */
+export const getGuildMusicQueue = (guildId: string): QueuedMusicItem[] => {
+  return [...(guildMusicQueues.get(guildId) || [])];
+};
+
+/**
+ * 길드의 음악 대기열 비우기 (삭제된 곡 수 반환)
+ */
+export const clearGuildMusicQueue = (guildId: string): number => {
+  const queue = guildMusicQueues.get(guildId);
+  const count = queue?.length || 0;
+  guildMusicQueues.delete(guildId);
+  return count;
+};
+
+/**
+ * 길드의 음악 대기열에서 특정 순번(1부터 시작)의 곡 삭제
+ */
+export const removeGuildMusicQueueItem = (
+  guildId: string,
+  index1Based: number,
+): QueuedMusicItem | null => {
+  const queue = guildMusicQueues.get(guildId);
+  if (!queue || index1Based < 1 || index1Based > queue.length) {
+    return null;
+  }
+  const [removed] = queue.splice(index1Based - 1, 1);
+  return removed || null;
 };
 
 /**
@@ -235,8 +295,8 @@ export const createYouTubeAudioResource = (params: {
   track: YouTubeTrackInfo;
   requesterName?: string | undefined;
 }): AudioResource<YouTubeTrackInfo> => {
-  // 1. 기존 진행 중인 이전 음악 스트림 프로세스 종료
-  stopGuildMusic(params.guildId);
+  // 1. 기존 진행 중인 이전 음악 스트림 프로세스만 종료 (대기열은 유지)
+  stopGuildMusic(params.guildId, { clearQueue: false });
 
   // 2. yt-dlp 바이너리로 stdout 파이프 오디오 스트림 생성
   const subprocess = (youtubedl as any).exec(
@@ -318,7 +378,178 @@ export const findLocalSong = (query: string): LocalTrackInfo | null => {
 };
 
 /**
- * 로컬 음원 또는 유튜브 음원을 통합 탐색하여 길드 플레이어에서 재생 시작
+ * 이미 탐색된 트랙(로컬/유튜브)을 길드 플레이어에서 실제 재생 시작
+ */
+const startResolvedTrack = (params: {
+  guildId: string;
+  track: MusicTrackInfo;
+  player: AudioPlayer;
+  connection?: VoiceConnection | undefined;
+  requesterName?: string | undefined;
+}): void => {
+  const { guildId, track, player, connection, requesterName } = params;
+
+  if (track.isLocal) {
+    stopGuildMusic(guildId, { clearQueue: false });
+
+    const resource = createAudioResource(track.filePath, {
+      inputType: StreamType.Arbitrary,
+      inlineVolume: true,
+    });
+
+    const scale = getGuildMusicVolumeScale(guildId);
+    resource.volume?.setVolume(scale);
+
+    player.play(resource);
+    if (connection) {
+      connection.subscribe(player);
+    }
+
+    activeGuildMusicSessions.set(guildId, {
+      guildId,
+      track,
+      requesterName,
+      startedAt: new Date(),
+      resource,
+    });
+
+    entersState(player, AudioPlayerStatus.Playing, 5_000).catch((err) =>
+      console.warn("[Music] 플레이어 재생 상태 진입 지연:", err?.message || err),
+    );
+    return;
+  }
+
+  const resource = createYouTubeAudioResource({
+    guildId,
+    track,
+    requesterName,
+  });
+
+  player.play(resource);
+  if (connection) {
+    connection.subscribe(player);
+  }
+
+  entersState(player, AudioPlayerStatus.Playing, 8_000).catch((err) =>
+    console.warn("[Music] 유튜브 스트림 재생 상태 진입 지연:", err?.message || err),
+  );
+};
+
+/**
+ * 길드의 AudioPlayer가 Idle(곡 종료) 상태가 되었을 때 대기열의 다음 곡을 자동 재생하는 리스너 등록
+ */
+const ensureGuildMusicIdleHandler = (
+  guildId: string,
+  player: AudioPlayer,
+  connection?: VoiceConnection,
+  onQueueEnd?: () => void,
+): void => {
+  guildPlayerBindings.set(guildId, { player, connection, onQueueEnd });
+
+  if (hookedPlayers.has(player)) {
+    return;
+  }
+  hookedPlayers.add(player);
+
+  player.on(AudioPlayerStatus.Idle, () => {
+    // skipGuildMusic 등에서 수동 전환 중이면 중복 처리 방지
+    if (transitioningGuilds.has(guildId)) {
+      return;
+    }
+
+    // 현재 길드가 음악 세션 중이 아니었다면(TTS 등 일반 발화 종료) 큐 전환하지 않음
+    const finishedSession = activeGuildMusicSessions.get(guildId);
+    if (!finishedSession) {
+      return;
+    }
+
+    if (finishedSession.subprocess) {
+      try {
+        finishedSession.subprocess.kill("SIGTERM");
+      } catch {}
+    }
+    activeGuildMusicSessions.delete(guildId);
+
+    const queue = guildMusicQueues.get(guildId);
+    if (queue && queue.length > 0) {
+      const nextItem = queue.shift()!;
+      const binding = guildPlayerBindings.get(guildId);
+      console.log(
+        `[Music:${guildId}] ⏭️ 대기열 다음 곡 자동 재생: ${nextItem.track.title} (남은 대기열: ${queue.length}곡)`,
+      );
+      try {
+        startResolvedTrack({
+          guildId,
+          track: nextItem.track,
+          player: binding?.player || player,
+          connection: binding?.connection || connection,
+          requesterName: nextItem.requesterName,
+        });
+      } catch (err) {
+        console.error(`[Music:${guildId}] 다음 곡 자동 재생 실패:`, err);
+      }
+      return;
+    }
+
+    console.log(`[Music:${guildId}] ✅ 모든 대기열 음악 재생 완료`);
+    const binding = guildPlayerBindings.get(guildId);
+    binding?.onQueueEnd?.();
+  });
+};
+
+/**
+ * 현재 곡을 건너뛰고 대기열의 다음 곡을 즉시 재생 (다음 곡이 없으면 정지)
+ */
+export const skipGuildMusic = async (
+  guildId: string,
+  player?: AudioPlayer,
+): Promise<{
+  skipped: MusicTrackInfo | null;
+  nextTrack: MusicTrackInfo | null;
+  remainingQueue: number;
+}> => {
+  const currentSession = activeGuildMusicSessions.get(guildId);
+  const skipped = currentSession?.track || null;
+  const binding = guildPlayerBindings.get(guildId);
+  const targetPlayer = player || binding?.player;
+
+  transitioningGuilds.add(guildId);
+  try {
+    stopGuildMusic(guildId, { clearQueue: false });
+    if (targetPlayer) {
+      targetPlayer.stop(true);
+    }
+
+    const queue = guildMusicQueues.get(guildId);
+    if (queue && queue.length > 0 && targetPlayer) {
+      const nextItem = queue.shift()!;
+      startResolvedTrack({
+        guildId,
+        track: nextItem.track,
+        player: targetPlayer,
+        connection: binding?.connection,
+        requesterName: nextItem.requesterName,
+      });
+      return {
+        skipped,
+        nextTrack: nextItem.track,
+        remainingQueue: queue.length,
+      };
+    }
+
+    binding?.onQueueEnd?.();
+    return {
+      skipped,
+      nextTrack: null,
+      remainingQueue: 0,
+    };
+  } finally {
+    transitioningGuilds.delete(guildId);
+  }
+};
+
+/**
+ * 로컬 음원 또는 유튜브 음원을 통합 탐색하여 길드 플레이어에서 재생하거나 대기열(Queue)에 추가
  */
 export const playMusicTrack = async (params: {
   guildId: string;
@@ -326,124 +557,142 @@ export const playMusicTrack = async (params: {
   player: AudioPlayer;
   connection?: VoiceConnection | undefined;
   requesterName?: string | undefined;
+  onQueueEnd?: (() => void) | undefined;
+  forceImmediate?: boolean | undefined;
 }): Promise<PlayMusicResult> => {
-  const { guildId, query, player, connection, requesterName } = params;
+  const {
+    guildId,
+    query,
+    player,
+    connection,
+    requesterName,
+    onQueueEnd,
+    forceImmediate,
+  } = params;
   const trimmed = query.trim();
   if (!trimmed) {
     return { success: false, errorMessage: "재생할 곡명이나 링크를 입력해주세요." };
   }
 
-  // 1. 로컬 음원 파일 우선 탐색 (초고속 즉시 재생)
-  const localSong = findLocalSong(trimmed);
-  if (localSong) {
+  ensureGuildMusicIdleHandler(guildId, player, connection, onQueueEnd);
+
+  // 1. 로컬 음원 우선 탐색, 없으면 유튜브 검색
+  let resolvedTrack: MusicTrackInfo | null = findLocalSong(trimmed);
+  if (!resolvedTrack) {
     try {
-      stopGuildMusic(guildId);
-
-      const resource = createAudioResource(localSong.filePath, {
-        inputType: StreamType.Arbitrary,
-        inlineVolume: true,
-      });
-
-      const scale = getGuildMusicVolumeScale(guildId);
-      resource.volume?.setVolume(scale);
-
-      player.play(resource);
-      if (connection) {
-        connection.subscribe(player);
+      resolvedTrack = await searchYouTubeTrack(trimmed);
+      if (!resolvedTrack) {
+        return {
+          success: false,
+          errorMessage: `\`${trimmed}\`에 해당하는 유튜브 영상을 찾을 수 없습니다.`,
+        };
       }
-
-      activeGuildMusicSessions.set(guildId, {
-        guildId,
-        track: localSong,
-        requesterName,
-        startedAt: new Date(),
-        resource,
-      });
-
-      // 5초 이내 재생 상태 진입 모니터링
-      entersState(player, AudioPlayerStatus.Playing, 5_000).catch((err) =>
-        console.warn("[Music] 플레이어 재생 상태 진입 지연:", err?.message || err),
-      );
-
-      return { success: true, track: localSong };
     } catch (err: any) {
-      console.error("[Music] 로컬 오디오 리소스 생성 실패:", err);
-      return { success: false, errorMessage: "로컬 음원을 읽어오는 중 오류가 발생했습니다." };
+      console.error("[Music] 유튜브 검색 실패:", err);
+      return {
+        success: false,
+        errorMessage: `유튜브 음악 검색 중 오류가 발생했습니다: ${err?.message || err}`,
+      };
     }
   }
 
-  // 2. 로컬에 없는 경우 유튜브에서 검색 및 스트리밍 재생
-  try {
-    const ytTrack = await searchYouTubeTrack(trimmed);
-    if (!ytTrack) {
-      return {
-        success: false,
-        errorMessage: `\`${trimmed}\`에 해당하는 유튜브 영상을 찾을 수 없습니다.`,
-      };
-    }
+  // 2. 이미 해당 길드에서 노래가 재생 중이면 대기열(Queue)에 추가
+  const isAlreadyPlayingMusic =
+    activeGuildMusicSessions.has(guildId) &&
+    player.state.status !== AudioPlayerStatus.Idle;
 
-    const resource = createYouTubeAudioResource({
+  if (isAlreadyPlayingMusic && !forceImmediate) {
+    const queue = guildMusicQueues.get(guildId) || [];
+    queue.push({
+      track: resolvedTrack,
+      requesterName,
+      addedAt: new Date(),
+    });
+    guildMusicQueues.set(guildId, queue);
+    console.log(
+      `[Music:${guildId}] 📜 대기열 #${queue.length}번 추가: ${resolvedTrack.title}`,
+    );
+    return {
+      success: true,
+      track: resolvedTrack,
+      queued: true,
+      queuePosition: queue.length,
+    };
+  }
+
+  // 3. 즉시 재생 시작
+  try {
+    startResolvedTrack({
       guildId,
-      track: ytTrack,
+      track: resolvedTrack,
+      player,
+      connection,
       requesterName,
     });
-
-    player.play(resource);
-    if (connection) {
-      connection.subscribe(player);
-    }
-
-    entersState(player, AudioPlayerStatus.Playing, 8_000).catch((err) =>
-      console.warn("[Music] 유튜브 스트림 재생 상태 진입 지연:", err?.message || err),
-    );
-
-    return { success: true, track: ytTrack };
+    return {
+      success: true,
+      track: resolvedTrack,
+      queued: false,
+    };
   } catch (err: any) {
-    console.error("[Music] 유튜브 스트리밍 재생 실패:", err);
+    console.error("[Music] 음악 재생 시작 실패:", err);
     return {
       success: false,
-      errorMessage: `유튜브 음악 재생 중 오류가 발생했습니다: ${err?.message || err}`,
+      errorMessage: `음악 재생 중 오류가 발생했습니다: ${err?.message || err}`,
     };
   }
 };
 
 /**
- * 재생 중인 트랙 정보를 미려한 디스코드 임베드로 생성
+ * 재생 중이거나 대기열에 추가된 트랙 정보를 미려한 디스코드 임베드로 생성
  */
 export const createMusicTrackEmbed = (
   track: MusicTrackInfo,
   requesterName?: string,
   guildId?: string,
+  options?: { queued?: boolean; queuePosition?: number },
 ): EmbedBuilder => {
   const volume = getGuildMusicVolumePercent(guildId);
+  const isQueued = options?.queued === true;
+  const titlePrefix = isQueued
+    ? `📜 대기열 #${options?.queuePosition ?? 1}번 추가: `
+    : "🎵 ";
 
   if (track.isLocal) {
     return new EmbedBuilder()
-      .setColor(0xff85a2)
-      .setTitle(`🎵 ${track.title}`)
-      .setDescription("설아의 내장 고음질 로컬 음원을 재생합니다!")
+      .setColor(isQueued ? 0x5865f2 : 0xff85a2)
+      .setTitle(`${titlePrefix}${track.title}`)
+      .setDescription(
+        isQueued
+          ? "현재 재생 중인 곡이 끝나면 자동으로 이어서 재생됩니다!"
+          : "설아의 내장 고음질 로컬 음원을 재생합니다!",
+      )
       .addFields(
         { name: "음원 출처", value: "📁 로컬 라이브러리", inline: true },
         { name: "파일명", value: `\`${track.fileName}\``, inline: true },
         { name: "볼륨", value: `🔊 ${volume}%`, inline: true },
         { name: "신청자", value: requesterName || "설아", inline: true },
       )
-      .setFooter({ text: "설아 뮤직 플레이어 • 볼륨: /music volume 또는 !volume" })
+      .setFooter({ text: "설아 뮤직 플레이어 • 대기열: /music queue • 스킵: /music skip" })
       .setTimestamp();
   }
 
   const embed = new EmbedBuilder()
-    .setColor(0xff0000)
-    .setTitle(`🎵 ${track.title}`)
+    .setColor(isQueued ? 0x5865f2 : 0xff0000)
+    .setTitle(`${titlePrefix}${track.title}`)
     .setURL(track.url)
-    .setDescription("유튜브에서 음원을 찾아 재생을 시작합니다!")
+    .setDescription(
+      isQueued
+        ? "현재 재생 중인 곡이 끝나면 자동으로 이어서 재생됩니다!"
+        : "유튜브에서 음원을 찾아 재생을 시작합니다!",
+    )
     .addFields(
       { name: "채널 / 아티스트", value: track.uploader || "YouTube", inline: true },
       { name: "재생 시간", value: track.formattedDuration, inline: true },
       { name: "볼륨", value: `🔊 ${volume}%`, inline: true },
       { name: "신청자", value: requesterName || "설아", inline: true },
     )
-    .setFooter({ text: "설아 뮤직 플레이어 • 볼륨: /music volume 또는 !volume" })
+    .setFooter({ text: "설아 뮤직 플레이어 • 대기열: /music queue • 스킵: /music skip" })
     .setTimestamp();
 
   if (track.thumbnail) {

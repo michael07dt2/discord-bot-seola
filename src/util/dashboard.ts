@@ -25,6 +25,10 @@ import {
   stopGuildMusic,
   getGuildMusicVolumePercent,
   setGuildMusicVolume,
+  getGuildMusicQueue,
+  skipGuildMusic,
+  clearGuildMusicQueue,
+  getGuildCurrentTrack,
 } from "./youtubeMusic.ts";
 import { getGuildAudioPlayer } from "./audioPlayer.ts";
 import {
@@ -437,6 +441,43 @@ export const registerDashboardRoutes = (
       return;
     }
 
+    if (action === "skip") {
+      const skipResult = await skipGuildMusic(guildId, getGuildAudioPlayer(guildId));
+      setGuildPlaybackMode(guildId, skipResult.nextTrack ? "music" : "idle");
+      notifyDashboardStatusChanged(getStatusSnapshot());
+      res.json({
+        success: true,
+        action: "skip",
+        skipped: skipResult.skipped,
+        nextTrack: skipResult.nextTrack,
+        remainingQueue: skipResult.remainingQueue,
+      });
+      return;
+    }
+
+    if (action === "queue") {
+      const current = getGuildCurrentTrack(guildId);
+      const queue = getGuildMusicQueue(guildId);
+      res.json({
+        success: true,
+        action: "queue",
+        currentTrack: current?.track || null,
+        queue,
+      });
+      return;
+    }
+
+    if (action === "clear_queue") {
+      const removedCount = clearGuildMusicQueue(guildId);
+      notifyDashboardStatusChanged(getStatusSnapshot());
+      res.json({
+        success: true,
+        action: "clear_queue",
+        removedCount,
+      });
+      return;
+    }
+
     if (action === "play") {
       if (!songTitle || !String(songTitle).trim()) {
         res.status(400).json({ error: "재생할 곡명 또는 유튜브 검색어를 입력해주세요." });
@@ -451,10 +492,16 @@ export const registerDashboardRoutes = (
         query: String(songTitle).trim(),
         player: getGuildAudioPlayer(guildId),
         requesterName: "대시보드",
+        onQueueEnd: () => {
+          setGuildPlaybackMode(guildId, "idle");
+          notifyDashboardStatusChanged(getStatusSnapshot());
+        },
       });
 
       if (!playResult.success || !playResult.track) {
-        setGuildPlaybackMode(guildId, "idle");
+        if (!getGuildCurrentTrack(guildId)) {
+          setGuildPlaybackMode(guildId, "idle");
+        }
         notifyDashboardStatusChanged(getStatusSnapshot());
         res.status(500).json({
           error: playResult.errorMessage || "음악을 재생할 수 없습니다.",
@@ -467,6 +514,8 @@ export const registerDashboardRoutes = (
         action: "play",
         songTitle,
         track: playResult.track,
+        queued: Boolean(playResult.queued),
+        queuePosition: playResult.queuePosition,
       });
       return;
     }

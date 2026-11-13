@@ -38,6 +38,8 @@ import {
   createMusicTrackEmbed,
   getGuildMusicVolumePercent,
   setGuildMusicVolume,
+  skipGuildMusic,
+  getGuildCurrentTrack,
 } from "./youtubeMusic.ts";
 import {
   getGuildAudioPlayer,
@@ -1969,6 +1971,42 @@ export const setupVoiceChatListener = (params: {
             return;
           }
 
+          // 2-2. 음성 명령: 다음 곡 스킵 ("다음 곡", "노래 넘겨", "스킵")
+          if (
+            /(?:다음\s*곡|노래\s*넘겨|음악\s*넘겨|스킵|건너뛰)/.test(
+              transcribedText,
+            )
+          ) {
+            const skipResult = await skipGuildMusic(guildId, player);
+            if (skipResult.nextTrack) {
+              session.playbackMode = "music";
+              if (session.textChannel && session.textChannel.isSendable()) {
+                const embed = createMusicTrackEmbed(
+                  skipResult.nextTrack,
+                  userName,
+                  guildId,
+                );
+                session.textChannel
+                  .send({
+                    content: `⏭️ **${skipResult.skipped?.title || "이전 곡"}** 건너뛰고 다음 곡 재생!`,
+                    embeds: [embed],
+                  })
+                  .catch(() => {});
+              }
+            } else {
+              session.playbackMode = "idle";
+              await speakInVoiceChannel(
+                connection,
+                player,
+                guildId,
+                skipResult.skipped
+                  ? "다음 대기 중인 노래가 없어서 음악을 마칠게."
+                  : "지금 재생 중인 노래가 없어.",
+              );
+            }
+            return;
+          }
+
           // 3. 음성 명령: 노래 재생 ("<곡명> 틀어줘" / "노래 틀어줘")
           const songQuery = matchVoiceSongCommand(transcribedText);
           if (songQuery) {
@@ -1979,15 +2017,32 @@ export const setupVoiceChatListener = (params: {
               player,
               connection,
               requesterName: userName,
+              onQueueEnd: () => {
+                session.playbackMode = "idle";
+              },
             });
 
             if (playResult.success && playResult.track) {
-              const replyText = playResult.track.isLocal
-                ? `${playResult.track.title} 틀어줄게!`
-                : `유튜브에서 ${playResult.track.title} 찾아 틀어줄게!`;
+              const replyText = playResult.queued
+                ? `${playResult.track.title}을 대기열 ${playResult.queuePosition}번에 추가했어!`
+                : playResult.track.isLocal
+                  ? `${playResult.track.title} 틀어줄게!`
+                  : `유튜브에서 ${playResult.track.title} 찾아 틀어줄게!`;
 
               if (session.textChannel && session.textChannel.isSendable()) {
-                const embed = createMusicTrackEmbed(playResult.track, userName);
+                const embed = createMusicTrackEmbed(
+                  playResult.track,
+                  userName,
+                  guildId,
+                  playResult.queued
+                    ? {
+                        queued: true,
+                        ...(playResult.queuePosition !== undefined
+                          ? { queuePosition: playResult.queuePosition }
+                          : {}),
+                      }
+                    : undefined,
+                );
                 session.textChannel.send({ embeds: [embed] }).catch(() => {});
               }
 
@@ -2007,7 +2062,9 @@ export const setupVoiceChatListener = (params: {
               );
               return;
             } else {
-              session.playbackMode = "idle";
+              if (!getGuildCurrentTrack(guildId)) {
+                session.playbackMode = "idle";
+              }
               await speakInVoiceChannel(
                 connection,
                 player,

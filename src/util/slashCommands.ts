@@ -32,6 +32,10 @@ import {
   createMusicTrackEmbed,
   getGuildMusicVolumePercent,
   setGuildMusicVolume,
+  getGuildMusicQueue,
+  skipGuildMusic,
+  clearGuildMusicQueue,
+  removeGuildMusicQueueItem,
 } from "./youtubeMusic.ts";
 import {
   getBotStatusReport,
@@ -317,6 +321,38 @@ export const slashCommands = [
     )
     .addSubcommand((sub) =>
       sub
+        .setName("skip")
+        .setNameLocalization("ko", "건너뛰기")
+        .setDescription("현재 재생 중인 곡을 건너뛰고 대기열의 다음 곡을 재생합니다."),
+    )
+    .addSubcommand((sub) =>
+      sub
+        .setName("queue")
+        .setNameLocalization("ko", "대기열")
+        .setDescription("현재 재생 중인 곡과 대기열(큐) 목록을 확인합니다."),
+    )
+    .addSubcommand((sub) =>
+      sub
+        .setName("clear")
+        .setNameLocalization("ko", "대기열비우기")
+        .setDescription("음악 대기열(큐)에 예약된 곡을 모두 비웁니다."),
+    )
+    .addSubcommand((sub) =>
+      sub
+        .setName("remove")
+        .setNameLocalization("ko", "대기열삭제")
+        .setDescription("대기열에서 지정한 번호의 곡을 삭제합니다.")
+        .addIntegerOption((opt) =>
+          opt
+            .setName("index")
+            .setNameLocalization("ko", "번호")
+            .setDescription("삭제할 대기열 순번 (1부터 시작)")
+            .setMinValue(1)
+            .setRequired(true),
+        ),
+    )
+    .addSubcommand((sub) =>
+      sub
         .setName("volume")
         .setNameLocalization("ko", "음량")
         .setDescription("음악 재생 볼륨을 확인하거나 조절합니다 (0~100%).")
@@ -324,7 +360,7 @@ export const slashCommands = [
           opt
             .setName("percent")
             .setNameLocalization("ko", "퍼센트")
-            .setDescription("설정할 볼륨 (0~100, 기본 35%)")
+            .setDescription("설정할 볼륨 (0~100, 기본 20%)")
             .setMinValue(0)
             .setMaxValue(100)
             .setRequired(false),
@@ -339,7 +375,7 @@ export const slashCommands = [
       opt
         .setName("percent")
         .setNameLocalization("ko", "퍼센트")
-        .setDescription("설정할 볼륨 (0~100, 기본 35%)")
+        .setDescription("설정할 볼륨 (0~100, 기본 20%)")
         .setMinValue(0)
         .setMaxValue(100)
         .setRequired(false),
@@ -830,7 +866,7 @@ export const handleSlashCommand = async (
           embeds: [
             new EmbedBuilder()
               .setColor(0xff85a2)
-              .setTitle("🗣️ MeloTTS 목소리 프리셋 목록")
+              .setTitle("🗣️ 설아 목소리(TTS) 프리셋 목록")
               .setDescription(
                 `현재 적용된 목소리: **${current.label}** (\`${current.id}\`)\n\n${listText}`,
               )
@@ -937,7 +973,10 @@ export const handleSlashCommand = async (
       }
 
       if (sub === "stop") {
-        if (!interaction.guildId) return;
+        if (!interaction.guildId) {
+          await interaction.editReply("❌ 서버(길드) 채널에서만 사용할 수 있습니다.");
+          return;
+        }
         stopGuildMusic(interaction.guildId);
         getGuildAudioPlayer(interaction.guildId).stop();
         setGuildPlaybackMode(interaction.guildId, "idle");
@@ -946,12 +985,118 @@ export const handleSlashCommand = async (
           "/music stop",
           "음악 재생을 중지했습니다.",
         );
-        await interaction.editReply("⏹️ 음악 재생을 중지했습니다.");
+        await interaction.editReply("⏹️ 음악 재생 및 대기열을 모두 중지했습니다.");
+        return;
+      }
+
+      if (sub === "skip") {
+        if (!interaction.guildId) {
+          await interaction.editReply("❌ 서버(길드) 채널에서만 사용할 수 있습니다.");
+          return;
+        }
+        const guildPlayer = getGuildAudioPlayer(interaction.guildId);
+        const skipResult = await skipGuildMusic(interaction.guildId, guildPlayer);
+        if (!skipResult.skipped && !skipResult.nextTrack) {
+          await interaction.editReply("⏭️ 현재 재생 중인 음악이 없습니다.");
+          return;
+        }
+        if (skipResult.nextTrack) {
+          setGuildPlaybackMode(interaction.guildId, "music");
+          const embed = createMusicTrackEmbed(
+            skipResult.nextTrack,
+            userName,
+            interaction.guildId,
+          );
+          await interaction.editReply({
+            content: `⏭️ **${skipResult.skipped?.title || "이전 곡"}**을(를) 건너뛰고 다음 곡을 재생합니다! (남은 대기열: ${skipResult.remainingQueue}곡)`,
+            embeds: [embed],
+          });
+        } else {
+          setGuildPlaybackMode(interaction.guildId, "idle");
+          await interaction.editReply(
+            `⏭️ **${skipResult.skipped?.title || "현재 곡"}**을(를) 건너뛰었습니다. 대기열에 남은 곡이 없어 재생을 마칩니다.`,
+          );
+        }
+        return;
+      }
+
+      if (sub === "queue") {
+        if (!interaction.guildId) {
+          await interaction.editReply("❌ 서버(길드) 채널에서만 사용할 수 있습니다.");
+          return;
+        }
+        const currentSession = getGuildCurrentTrack(interaction.guildId);
+        const queue = getGuildMusicQueue(interaction.guildId);
+
+        if (!currentSession && queue.length === 0) {
+          await interaction.editReply("📜 현재 재생 중인 곡과 대기열이 모두 비어 있습니다.");
+          return;
+        }
+
+        const nowText = currentSession
+          ? `🎶 **현재 재생 중**: ${currentSession.track.title}${currentSession.requesterName ? ` *(신청: ${currentSession.requesterName})*` : ""}`
+          : "🎶 **현재 재생 중**: 없음";
+
+        const queueLines =
+          queue.length > 0
+            ? queue
+                .slice(0, 15)
+                .map(
+                  (item, idx) =>
+                    `**${idx + 1}.** ${item.track.title}${item.track.isLocal ? " *(로컬)*" : ` (${item.track.formattedDuration})`}${item.requesterName ? ` — ${item.requesterName}` : ""}`,
+                )
+                .join("\n") +
+              (queue.length > 15 ? `\n... 외 ${queue.length - 15}곡` : "")
+            : "대기열에 예약된 곡이 없습니다.";
+
+        await interaction.editReply({
+          embeds: [
+            new EmbedBuilder()
+              .setColor(0x5865f2)
+              .setTitle(`📜 음악 대기열 (${queue.length}곡 대기 중)`)
+              .setDescription(`${nowText}\n\n**다음 대기 곡**\n${queueLines}`)
+              .setFooter({ text: "건너뛰기: /music skip • 삭제: /music remove • 비우기: /music clear" }),
+          ],
+        });
+        return;
+      }
+
+      if (sub === "clear") {
+        if (!interaction.guildId) {
+          await interaction.editReply("❌ 서버(길드) 채널에서만 사용할 수 있습니다.");
+          return;
+        }
+        const removedCount = clearGuildMusicQueue(interaction.guildId);
+        await interaction.editReply(
+          removedCount > 0
+            ? `🗑️ 음악 대기열에서 **${removedCount}곡**을 모두 비웠습니다.`
+            : "📜 이미 음악 대기열이 비어 있습니다.",
+        );
+        return;
+      }
+
+      if (sub === "remove") {
+        if (!interaction.guildId) {
+          await interaction.editReply("❌ 서버(길드) 채널에서만 사용할 수 있습니다.");
+          return;
+        }
+        const index = interaction.options.getInteger("index", true);
+        const removed = removeGuildMusicQueueItem(interaction.guildId, index);
+        if (!removed) {
+          await interaction.editReply(`❌ 대기열 ${index}번에 해당하는 곡을 찾을 수 없습니다.`);
+          return;
+        }
+        await interaction.editReply(
+          `🗑️ 대기열 **#${index}번** 곡(**${removed.track.title}**)을 삭제했습니다.`,
+        );
         return;
       }
 
       if (sub === "now") {
-        if (!interaction.guildId) return;
+        if (!interaction.guildId) {
+          await interaction.editReply("❌ 서버(길드) 채널에서만 사용할 수 있습니다.");
+          return;
+        }
         const currentSession = getGuildCurrentTrack(interaction.guildId);
         if (!currentSession) {
           await interaction.editReply("현재 재생 중인 음악이 없습니다.");
@@ -1046,10 +1191,18 @@ export const handleSlashCommand = async (
             player: guildPlayer,
             connection,
             requesterName: userName,
+            onQueueEnd: () => {
+              setGuildPlaybackMode(voiceChannel.guild.id, "idle");
+              if (sharedStatusSnapshotGetter) {
+                notifyDashboardStatusChanged(sharedStatusSnapshotGetter());
+              }
+            },
           });
 
           if (!playResult.success || !playResult.track) {
-            setGuildPlaybackMode(voiceChannel.guild.id, "idle");
+            if (!getGuildCurrentTrack(voiceChannel.guild.id)) {
+              setGuildPlaybackMode(voiceChannel.guild.id, "idle");
+            }
             await interaction.editReply(
               `❌ ${playResult.errorMessage || "음악을 재생할 수 없습니다."}`,
             );
@@ -1057,11 +1210,25 @@ export const handleSlashCommand = async (
           }
 
           const track = playResult.track;
-          const embed = createMusicTrackEmbed(track, userName);
+          const embed = createMusicTrackEmbed(
+            track,
+            userName,
+            voiceChannel.guild.id,
+            playResult.queued
+              ? {
+                  queued: true,
+                  ...(playResult.queuePosition !== undefined
+                    ? { queuePosition: playResult.queuePosition }
+                    : {}),
+                }
+              : undefined,
+          );
           await appendConversationContext(
             userName,
             `/music play query:${query}`,
-            `🎶 ${track.title} 음악 재생을 시작했습니다.`,
+            playResult.queued
+              ? `📜 대기열 #${playResult.queuePosition}번에 ${track.title} 곡을 추가했습니다.`
+              : `🎶 ${track.title} 음악 재생을 시작했습니다.`,
           );
           await interaction.editReply({ embeds: [embed] });
         } catch (e: any) {
@@ -1075,7 +1242,10 @@ export const handleSlashCommand = async (
 
     // 7. /volume (음악 볼륨 조절)
     if (commandName === "volume") {
-      if (!interaction.guildId) return;
+      if (!interaction.guildId) {
+        await interaction.editReply("❌ 서버(길드) 채널에서만 사용할 수 있습니다.");
+        return;
+      }
       const inputPercent = interaction.options.getInteger("percent");
       const current = getGuildMusicVolumePercent(interaction.guildId);
 
@@ -1275,7 +1445,7 @@ export const handleSlashCommand = async (
           {
             name: "💬 대화 및 페르소나 설정",
             value: [
-              "`/persona set` 또는 `!persona <이름>` — 페르소나 변경 (현재: **${personaDef.name}**)",
+              `\`/persona set\` 또는 \`!persona <이름>\` — 페르소나 변경 (현재: **${personaDef.name}**)`,
               "페르소나 종류: `girlfriend`(여자친구), `assistant`(비서), `tsundere`(츤데레), `senior`(선배), `cute`(발랄), `custom`(사용자 정의)",
               "`/persona custom [prompt]` — 나만의 시스템 프롬프트 직접 지정",
               "`/clear` — 이전 대화 내역 초기화",
@@ -1295,16 +1465,20 @@ export const handleSlashCommand = async (
               "`/voice join` 또는 `설아야 이리온` — 음성 채널 입장 및 실시간 통화",
               "`/voice leave` 또는 `설아야 꺼져` — 음성 채널 퇴장",
               "`/voice speak text:<내용>` — 음성 채널에서 텍스트 TTS 발화",
-              "`/preset [voice]` 또는 `!voice <이름>` — 목소리 변경 (현재: **${currentPreset.label}**)",
-              "지원 프리셋: `설아`(`seola`), `발랄`(`lively`), `차분`(`calm`), `속삭임`(`whisper`), `멜로`(`melo`), `아바`(`ava`), `선희`(`sunhi`)",
+              `\`/preset [voice]\` 또는 \`!voice <이름>\` — 목소리 변경 (현재: **${currentPreset.label}**)`,
+              "지원 프리셋: `kei`, `qwen`, `cosy`, `reva`, `gamgyuri`, `myoya`, `myoya_cosy`, `seola`, `lively`, `calm`, `whisper`, `melo`, `ava`, `sunhi`",
             ].join("\n"),
           },
           {
-            name: "🎵 음악 및 유튜브 재생",
+            name: "🎵 음악 및 유튜브 재생 (대기열/볼륨)",
             value: [
-              "`/music play <query>` 또는 `설아야 <곡명> 틀어줘` — 로컬 음원 또는 유튜브 노래 검색 재생",
+              "`/music play <query>` 또는 `설아야 <곡명> 틀어줘` — 음악 재생 (재생 중이면 대기열 추가)",
+              "`/music queue` 또는 `!queue` — 현재 재생 곡 및 대기열 목록 확인",
+              "`/music skip` 또는 `!skip` — 다음 곡으로 건너뛰기",
+              "`/music remove <index>` / `/music clear` — 대기열 곡 삭제 및 비우기",
               "`/music now` — 현재 재생 중인 음악 정보 확인",
-              "`/music stop` 또는 `설아야 노래 꺼줘` — 음악 정지",
+              "`/volume [0~100]` 또는 `!volume <수치>` — 볼륨 조절 *(기본 20%)*",
+              "`/music stop` 또는 `설아야 노래 꺼줘` — 음악 및 대기열 중지",
             ].join("\n"),
           },
           {
