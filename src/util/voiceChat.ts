@@ -40,6 +40,10 @@ import {
   setGuildMusicVolume,
 } from "./youtubeMusic.ts";
 import {
+  getGuildAudioPlayer,
+  destroyGuildAudioPlayer,
+} from "./audioPlayer.ts";
+import {
   getBotSetting,
   setBotSetting,
   getBotSettingsByPrefix,
@@ -646,6 +650,7 @@ export const getActiveVoiceSessions = (): ActiveVoiceSessionStatus[] => {
  */
 export const leaveVoiceChannel = (guildId: string): boolean => {
   stopGuildMusic(guildId);
+  destroyGuildAudioPlayer(guildId);
   const session = guildSessions.get(guildId);
   if (session) {
     try {
@@ -719,7 +724,6 @@ export const clearVoiceSessionFromDb = async (guildId: string): Promise<void> =>
  */
 export const restoreVoiceSessionsIfRecent = async (
   client: Client,
-  player: AudioPlayer,
   maxAgeMs = 10 * 60 * 1000, // 기본 10분 이내
 ): Promise<void> => {
   try {
@@ -792,6 +796,7 @@ export const restoreVoiceSessionsIfRecent = async (
         console.log(
           `[VoiceChat] 🔄 재부팅 이전 음성 세션 복원 시작: ${guild.name} / ${voiceChannel.name} (대기 인원: ${humanMembers.size}명)`,
         );
+        const player = getGuildAudioPlayer(guild.id);
         const connection = await connectToVoiceChannel(voiceChannel);
         setupVoiceChatListener({
           client,

@@ -63,16 +63,14 @@ import {
   notifyDashboardStatusChanged,
   type DashboardStatusSnapshot,
 } from "./dashboard.ts";
+import { getGuildAudioPlayer } from "./audioPlayer.ts";
 
-// index.ts로부터 공유받을 런타임 의존성 (플레이어 및 대시보드 스냅샷 헬퍼)
-let sharedAudioPlayer: AudioPlayer | null = null;
+// index.ts로부터 공유받을 런타임 의존성 (대시보드 스냅샷 헬퍼)
 let sharedStatusSnapshotGetter: (() => DashboardStatusSnapshot) | null = null;
 
 export const setSlashCommandDependencies = (deps: {
-  player: AudioPlayer;
   getDashboardStatusSnapshot: () => DashboardStatusSnapshot;
 }) => {
-  sharedAudioPlayer = deps.player;
   sharedStatusSnapshotGetter = deps.getDashboardStatusSnapshot;
 };
 
@@ -641,18 +639,17 @@ export const handleSlashCommand = async (
         }
 
         try {
+          const guildPlayer = getGuildAudioPlayer(voiceChannel.guild.id);
           const connection = await connectToVoiceChannel(voiceChannel);
-          if (sharedAudioPlayer) {
-            setupVoiceChatListener({
-              client: interaction.client,
-              connection,
-              voiceChannel,
-              textChannel: interaction.channel?.isSendable() ? interaction.channel : null,
-              player: sharedAudioPlayer,
-            });
-            if (sharedStatusSnapshotGetter) {
-              notifyDashboardStatusChanged(sharedStatusSnapshotGetter());
-            }
+          setupVoiceChatListener({
+            client: interaction.client,
+            connection,
+            voiceChannel,
+            textChannel: interaction.channel?.isSendable() ? interaction.channel : null,
+            player: guildPlayer,
+          });
+          if (sharedStatusSnapshotGetter) {
+            notifyDashboardStatusChanged(sharedStatusSnapshotGetter());
           }
           await appendConversationContext(
             userName,
@@ -729,7 +726,7 @@ export const handleSlashCommand = async (
         if (!interaction.guildId) return;
 
         const connection = getVoiceConnection(interaction.guildId);
-        if (!connection || !sharedAudioPlayer) {
+        if (!connection) {
           await interaction.editReply(
             "❌ 설아가 현재 이 서버의 음성 채널에 연결되어 있지 않습니다. 먼저 `/voice join`으로 불러주세요!",
           );
@@ -739,7 +736,7 @@ export const handleSlashCommand = async (
         try {
           await speakInVoiceChannel(
             connection,
-            sharedAudioPlayer,
+            getGuildAudioPlayer(interaction.guildId),
             interaction.guildId,
             text,
           );
@@ -805,12 +802,12 @@ export const handleSlashCommand = async (
         });
 
         // 음성 채널에 연결되어 있다면 샘플 인사 발화
-        if (interaction.guildId && sharedAudioPlayer) {
+        if (interaction.guildId) {
           const connection = getVoiceConnection(interaction.guildId);
           if (connection) {
             await speakInVoiceChannel(
               connection,
-              sharedAudioPlayer,
+              getGuildAudioPlayer(interaction.guildId),
               interaction.guildId,
               "목소리를 바꿔봤는데 어때? 마음에 들어?",
             ).catch(() => {});
@@ -942,9 +939,7 @@ export const handleSlashCommand = async (
       if (sub === "stop") {
         if (!interaction.guildId) return;
         stopGuildMusic(interaction.guildId);
-        if (sharedAudioPlayer) {
-          sharedAudioPlayer.stop();
-        }
+        getGuildAudioPlayer(interaction.guildId).stop();
         setGuildPlaybackMode(interaction.guildId, "idle");
         await appendConversationContext(
           userName,
@@ -1031,19 +1026,15 @@ export const handleSlashCommand = async (
           return;
         }
 
-        if (!sharedAudioPlayer) {
-          await interaction.editReply("❌ 오디오 플레이어가 초기화되지 않았습니다.");
-          return;
-        }
-
         try {
+          const guildPlayer = getGuildAudioPlayer(voiceChannel.guild.id);
           const connection = await connectToVoiceChannel(voiceChannel);
           setupVoiceChatListener({
             client: interaction.client,
             connection,
             voiceChannel,
             textChannel: interaction.channel?.isSendable() ? interaction.channel : null,
-            player: sharedAudioPlayer,
+            player: guildPlayer,
           });
 
           // 음악 모드로 전환 및 탐색/재생 시작
@@ -1052,7 +1043,7 @@ export const handleSlashCommand = async (
           const playResult = await playMusicTrack({
             guildId: voiceChannel.guild.id,
             query,
-            player: sharedAudioPlayer,
+            player: guildPlayer,
             connection,
             requesterName: userName,
           });

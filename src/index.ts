@@ -1,10 +1,5 @@
 import express from "express";
 import { Client, Events, GatewayIntentBits } from "discord.js";
-import {
-  createAudioPlayer,
-  NoSubscriberBehavior,
-  AudioPlayerStatus,
-} from "@discordjs/voice";
 
 import CONFIG from "./config/index.ts";
 import {
@@ -38,25 +33,8 @@ if (!lock.success) {
   process.exit(1);
 }
 
-// 1. Express 앱 및 전역 오디오 플레이어 초기화
+// 1. Express 앱 초기화 (오디오 플레이어는 src/util/audioPlayer.ts에서 길드별로 독립 관리)
 const app = express();
-const player = createAudioPlayer({
-  behaviors: {
-    noSubscriber: NoSubscriberBehavior.Play,
-  },
-});
-
-player.on("error", (error) => {
-  console.error("[AudioPlayer] 오디오 재생 에러:", error.message, error);
-});
-
-player.on(AudioPlayerStatus.Playing, () => {
-  console.log("[AudioPlayer] 음성 채널 오디오 재생 시작");
-});
-
-player.on(AudioPlayerStatus.Idle, () => {
-  console.log("[AudioPlayer] 재생 종료 → 유휴(Idle) 상태 복귀");
-});
 
 // 2. 디스코드 봇 클라이언트 초기화
 const discordClient = new Client({
@@ -88,7 +66,6 @@ const getDashboardStatusSnapshot = (): DashboardStatusSnapshot => {
 
 // 슬래시 명령어 핸들러에 의존성 주입
 setSlashCommandDependencies({
-  player,
   getDashboardStatusSnapshot,
 });
 
@@ -105,7 +82,7 @@ discordClient.once(Events.ClientReady, async (readyClient) => {
   // 디스코드 슬래시(/) 명령어 자동 동기화 등록
   await registerSlashCommands(readyClient);
   // 재부팅/업데이트 이전 음성 채널 자동 재입장 복원 (최근 10분 이내 활성 세션)
-  await restoreVoiceSessionsIfRecent(readyClient, player).catch((err) => {
+  await restoreVoiceSessionsIfRecent(readyClient).catch((err) => {
     console.error("[VoiceChat] 음성 채널 자동 복원 실패:", err);
   });
 });
@@ -127,7 +104,6 @@ discordClient.on(Events.InteractionCreate, async (interaction) => {
 discordClient.on("messageCreate", async (message) => {
   try {
     await handlePrefixCommand(message, {
-      player,
       getDashboardStatusSnapshot,
     });
   } catch (err) {
@@ -136,7 +112,7 @@ discordClient.on("messageCreate", async (message) => {
 });
 
 // 3. 웹 대시보드 및 REST API 라우트 등록
-registerDashboardRoutes(app, getDashboardStatusSnapshot, { player });
+registerDashboardRoutes(app, getDashboardStatusSnapshot);
 
 const server = app.listen(CONFIG.PORT, () => {
   console.log(`[Web] Voice Dashboard running on ${CONFIG.DASHBOARD_URL}`);

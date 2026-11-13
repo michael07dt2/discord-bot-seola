@@ -26,7 +26,7 @@ import {
   getGuildMusicVolumePercent,
   setGuildMusicVolume,
 } from "./youtubeMusic.ts";
-import type { AudioPlayer } from "@discordjs/voice";
+import { getGuildAudioPlayer } from "./audioPlayer.ts";
 import {
   deleteUserMemory,
   listUserMemories,
@@ -311,7 +311,6 @@ const renderDashboardHtml = (): string => {
 export const registerDashboardRoutes = (
   app: Express,
   getStatusSnapshot: () => DashboardStatusSnapshot,
-  deps?: { player?: AudioPlayer },
 ): void => {
   // JSON body parser 미들웨어 등록
   app.use(express.json());
@@ -431,9 +430,7 @@ export const registerDashboardRoutes = (
 
     if (action === "stop") {
       stopGuildMusic(guildId);
-      if (deps?.player) {
-        deps.player.stop();
-      }
+      getGuildAudioPlayer(guildId).stop();
       setGuildPlaybackMode(guildId, "idle");
       notifyDashboardStatusChanged(getStatusSnapshot());
       res.json({ success: true, action: "stop" });
@@ -449,33 +446,28 @@ export const registerDashboardRoutes = (
       setGuildPlaybackMode(guildId, "music");
       notifyDashboardStatusChanged(getStatusSnapshot());
 
-      if (deps?.player) {
-        const playResult = await playMusicTrack({
-          guildId,
-          query: String(songTitle).trim(),
-          player: deps.player,
-          requesterName: "대시보드",
-        });
+      const playResult = await playMusicTrack({
+        guildId,
+        query: String(songTitle).trim(),
+        player: getGuildAudioPlayer(guildId),
+        requesterName: "대시보드",
+      });
 
-        if (!playResult.success || !playResult.track) {
-          setGuildPlaybackMode(guildId, "idle");
-          notifyDashboardStatusChanged(getStatusSnapshot());
-          res.status(500).json({
-            error: playResult.errorMessage || "음악을 재생할 수 없습니다.",
-          });
-          return;
-        }
-
-        res.json({
-          success: true,
-          action: "play",
-          songTitle,
-          track: playResult.track,
+      if (!playResult.success || !playResult.track) {
+        setGuildPlaybackMode(guildId, "idle");
+        notifyDashboardStatusChanged(getStatusSnapshot());
+        res.status(500).json({
+          error: playResult.errorMessage || "음악을 재생할 수 없습니다.",
         });
         return;
       }
 
-      res.json({ success: true, action: "play", songTitle });
+      res.json({
+        success: true,
+        action: "play",
+        songTitle,
+        track: playResult.track,
+      });
       return;
     }
 

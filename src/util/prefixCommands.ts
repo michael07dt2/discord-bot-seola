@@ -7,13 +7,13 @@ import {
   type VoiceBasedChannel,
 } from "discord.js";
 import {
-  AudioPlayer,
   AudioPlayerStatus,
   createAudioResource,
   entersState,
   getVoiceConnection,
   StreamType,
 } from "@discordjs/voice";
+import { getGuildAudioPlayer } from "./audioPlayer.ts";
 import {
   chatAI,
   connectToVoiceChannel,
@@ -62,7 +62,6 @@ import CONFIG from "../config/index.ts";
 export type PrefixDiscordMessage = OmitPartialGroupDMChannel<Message<boolean>>;
 
 export interface PrefixCommandContext {
-  player: AudioPlayer;
   getDashboardStatusSnapshot: () => DashboardStatusSnapshot;
 }
 
@@ -73,7 +72,7 @@ export const handlePrefixCommand = async (
   message: PrefixDiscordMessage,
   ctx: PrefixCommandContext,
 ): Promise<void> => {
-  const { player, getDashboardStatusSnapshot } = ctx;
+  const { getDashboardStatusSnapshot } = ctx;
   const dashboardUrl = CONFIG.DASHBOARD_URL;
 
   // 봇이 보낸 메시지 무시
@@ -393,7 +392,7 @@ export const handlePrefixCommand = async (
     if (connection && guildId) {
       await speakInVoiceChannel(
         connection,
-        player,
+        getGuildAudioPlayer(guildId),
         guildId,
         "목소리를 바꿔봤는데 어때? 마음에 들어?",
       );
@@ -414,13 +413,14 @@ export const handlePrefixCommand = async (
     }
 
     try {
+      const guildPlayer = getGuildAudioPlayer(voiceChannel.guild.id);
       const connection = await connectToVoiceChannel(voiceChannel);
       setupVoiceChatListener({
         client: message.client,
         connection,
         voiceChannel,
         textChannel: message.channel.isSendable() ? message.channel : null,
-        player,
+        player: guildPlayer,
       });
       notifyDashboardStatusChanged(getDashboardStatusSnapshot());
 
@@ -434,7 +434,7 @@ export const handlePrefixCommand = async (
       );
       await speakInVoiceChannel(
         connection,
-        player,
+        guildPlayer,
         voiceChannel.guild.id,
         "안녕! 불렀어?",
       );
@@ -495,7 +495,7 @@ export const handlePrefixCommand = async (
     const guildId = message.guild?.id;
     if (guildId) {
       stopGuildMusic(guildId);
-      player.stop();
+      getGuildAudioPlayer(guildId).stop();
       setGuildPlaybackMode(guildId, "idle");
       await appendConversationContext(
         getUserKey(message),
@@ -559,7 +559,7 @@ export const handlePrefixCommand = async (
       const result = await playMusicTrack({
         guildId: voiceChannel.guild.id,
         query: userQuery,
-        player,
+        player: getGuildAudioPlayer(voiceChannel.guild.id),
         connection,
         requesterName: message.member?.displayName || message.author.username,
       });
@@ -655,7 +655,7 @@ export const handlePrefixCommand = async (
       return;
     }
 
-    player.stop();
+    getGuildAudioPlayer(voiceChannel.guild.id).stop();
     removeVoiceChatSession(voiceChannel.guild.id);
     connection.destroy();
     notifyDashboardStatusChanged(getDashboardStatusSnapshot());
