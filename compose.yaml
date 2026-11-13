@@ -39,3 +39,4 @@ services:
     volumes:
       - ./src:/app/src
       - ./ecosystem.config.cjs:/app/ecosystem.config.cjs
+      - ./asset:/app/asset

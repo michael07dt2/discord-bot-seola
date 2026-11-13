@@ -109,6 +109,19 @@ export interface VoicePreset {
   rate: string;
 }
 
+// 음원 파일 경로를 로컬 asset 디렉터리 기준으로 자동 해석 (도커 컨테이너 및 호스트 호환)
+const resolveAssetPath = (targetPath: string): string => {
+  if (fs.existsSync(targetPath)) {
+    return targetPath;
+  }
+  const fileName = path.basename(targetPath);
+  const candidate = path.resolve(process.cwd(), "asset", fileName);
+  if (fs.existsSync(candidate)) {
+    return candidate;
+  }
+  return targetPath;
+};
+
 export const VOICE_PRESETS: Record<string, VoicePreset> = {
   kei: {
     id: "kei",
@@ -116,11 +129,12 @@ export const VOICE_PRESETS: Record<string, VoicePreset> = {
     description: "차분하고 쿨하면서도 앙칼진 블루아카이브 케이의 신경망 복제 보이스 (Qwen3-TTS / CosyVoice)",
     engine: "qwen",
     qwenMode: "clone",
-    qwenRefAudio: "/Users/micha/Projects/personal_projects/qwen3-tts-mlx/samples/youtube_kei.wav",
+    qwenRefAudio: resolveAssetPath("/Users/micha/Projects/personal_projects/qwen3-tts-mlx/samples/youtube_kei.wav"),
     qwenRefText: "에이! 진짜 그렇게 착한 애 취급하지 말라구요! 그쵸! 그렇게까지 애 아니니까요! 무섭겠다... 선생님 지금 웃었죠? 똑똑히 봤어요! 두고 봐요! 언젠간 그 몸에 뼈저리게 새겨줄테니까!",
     qwenInstruct: "차갑고 감정이 절제된 어린 소녀의 목소리. 아리스보다 반 옥타브 낮고 차분한 톤으로, 억양의 높낮이 변화가 적고 기계처럼 또박또박 일정한 속도로 말한다.",
     cosySpeed: 1.0,
-    cosyMode: "3초 음성 복제",
+    cosyMode: "3초 고속 복제",
+    cosyPromptWav: resolveAssetPath("/Users/micha/Projects/personal_projects/CosyVoice/asset/youtube_kei.wav"),
     cosyInstructText: "차갑고 감정이 절제된 어린 소녀의 목소리. 아리스보다 반 옥타브 낮고 차분한 톤으로, 억양의 높낮이 변화가 적고 기계처럼 또박또박 일정한 속도로 말한다.",
     voiceName: "kei-custom",
     voiceLocale: "ko-KR",
@@ -147,6 +161,7 @@ export const VOICE_PRESETS: Record<string, VoicePreset> = {
     engine: "cosyvoice",
     cosySpeed: 1.0,
     cosyMode: CONFIG.COSYVOICE_MODE,
+    cosyPromptWav: resolveAssetPath(CONFIG.COSYVOICE_PROMPT_WAV),
     voiceName: "cosy-custom",
     voiceLocale: "ko-KR",
     pitch: "+0Hz",
@@ -158,8 +173,8 @@ export const VOICE_PRESETS: Record<string, VoicePreset> = {
     description: "재치있고 시니컬한 드로잉 스트리머 레바의 보이스 (CosyVoice)",
     engine: "cosyvoice",
     cosySpeed: 1.0,
-    cosyMode: "3초 음성 복제",
-    cosyPromptWav: "/Users/micha/Projects/personal_projects/CosyVoice/asset/youtube_prompt.wav",
+    cosyMode: "3초 고속 복제",
+    cosyPromptWav: resolveAssetPath("/Users/micha/Projects/personal_projects/CosyVoice/asset/youtube_prompt.wav"),
     cosyPromptText: "확실히 요새 좀 옛날보단 그림에 대한 상상력이 줄어든 것 같아요.".normalize("NFC"),
     voiceName: "reva-custom",
     voiceLocale: "ko-KR",
@@ -172,8 +187,8 @@ export const VOICE_PRESETS: Record<string, VoicePreset> = {
     description: "발랄하고 귀여운 게이머 감규리의 보이스 (CosyVoice)",
     engine: "cosyvoice",
     cosySpeed: 1.0,
-    cosyMode: "3초 음성 복제",
-    cosyPromptWav: "/Users/micha/Projects/personal_projects/CosyVoice/asset/youtube_prompt_307_318.wav",
+    cosyMode: "3초 고속 복제",
+    cosyPromptWav: resolveAssetPath("/Users/micha/Projects/personal_projects/CosyVoice/asset/youtube_prompt_307_318.wav"),
     cosyPromptText: "자 이렇게 오늘의 게임 마무리해보도록 하겠습니다. 어쩐지 뭐 얼마 안 한 거 같은데 여기 다 온 거 같지?".normalize("NFC"),
     voiceName: "gamgyuri-custom",
     voiceLocale: "ko-KR",
@@ -186,12 +201,12 @@ export const VOICE_PRESETS: Record<string, VoicePreset> = {
     description: "다시는 만날 수 없는 그 사람의 다정하고 나긋나긋한 신경망 복제 보이스 (Qwen3-TTS)",
     engine: "qwen",
     qwenMode: "clone",
-    qwenRefAudio: "/Users/micha/Projects/personal_projects/qwen3-tts-mlx/samples/youtube_myoya.wav",
+    qwenRefAudio: resolveAssetPath("/Users/micha/Projects/personal_projects/qwen3-tts-mlx/samples/youtube_myoya.wav"),
     qwenRefText: "길드 이름을 동화공방으로 지은 배경이 혹시 있으실까요? 저게 원래요 완전 방송 초창기 때 제 블로그 이름이었어요. 약간 동화책 같은 그림을 그리는 작업실 같은 느낌으로 만든 거예요. 제가 원래 그림으로 방송을 시작했었단 말이죠. 근데 애니메이션 제작사가 있더라고요. 엄청 유명한.".normalize("NFC"),
     qwenInstruct: "A young woman with a bright, cute, and high-pitched voice, speaking cheerfully with lively intonation.",
     cosySpeed: 1.0,
-    cosyMode: "3초 음성 복제",
-    cosyPromptWav: "/Users/micha/Projects/personal_projects/CosyVoice/asset/youtube_myoya.wav",
+    cosyMode: "3초 고속 복제",
+    cosyPromptWav: resolveAssetPath("/Users/micha/Projects/personal_projects/CosyVoice/asset/youtube_myoya.wav"),
     cosyPromptText: "길드 이름을 동화공방으로 지은 배경이 혹시 있으실까요? 저게 원래요 완전 방송 초창기 때 제 블로그 이름이었어요. 약간 동화책 같은 그림을 그리는 작업실 같은 느낌으로 만든 거예요. 제가 원래 그림으로 방송을 시작했었단 말이죠. 근데 애니메이션 제작사가 있더라고요. 엄청 유명한.".normalize("NFC"),
     cosyInstructText: "A young woman with a bright, cute, and high-pitched voice, speaking cheerfully with lively intonation.",
     voiceName: "myoya-qwen",
@@ -205,8 +220,8 @@ export const VOICE_PRESETS: Record<string, VoicePreset> = {
     description: "다시는 만날 수 없는 그 사람의 다정하고 나긋나긋한 음성 복제 보이스 (CosyVoice)",
     engine: "cosyvoice",
     cosySpeed: 1.0,
-    cosyMode: "3초 음성 복제",
-    cosyPromptWav: "/Users/micha/Projects/personal_projects/CosyVoice/asset/youtube_myoya.wav",
+    cosyMode: "3초 고속 복제",
+    cosyPromptWav: resolveAssetPath("/Users/micha/Projects/personal_projects/CosyVoice/asset/youtube_myoya.wav"),
     cosyPromptText: "길드 이름을 동화공방으로 지은 배경이 혹시 있으실까요? 저게 원래요 완전 방송 초창기 때 제 블로그 이름이었어요. 약간 동화책 같은 그림을 그리는 작업실 같은 느낌으로 만든 거예요. 제가 원래 그림으로 방송을 시작했었단 말이죠. 근데 애니메이션 제작사가 있더라고요. 엄청 유명한.".normalize("NFC"),
     cosyInstructText: "A young woman with a bright, cute, and high-pitched voice, speaking cheerfully with lively intonation.",
     voiceName: "myoya-cosy",

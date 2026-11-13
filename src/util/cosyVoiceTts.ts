@@ -71,6 +71,18 @@ const enqueueInference = <T>(fn: () => Promise<T>): Promise<T> => {
 // 원격 서버에 이미 업로드된 프롬프트 음원의 원격 파일 경로 캐시 (로컬경로 -> 원격경로)
 const remoteUploadedPathCache = new Map<string, string>();
 
+const resolveLocalWavPath = (inputPath: string): string => {
+  if (fs.existsSync(inputPath)) {
+    return inputPath;
+  }
+  const baseName = path.basename(inputPath);
+  const localProjectAsset = path.resolve(process.cwd(), "asset", baseName);
+  if (fs.existsSync(localProjectAsset)) {
+    return localProjectAsset;
+  }
+  return inputPath;
+};
+
 /**
  * 프롬프트 음원을 CosyVoice 서버(로컬/원격 윈도우 등)의 /gradio_api/upload 엔드포인트에 업로드하고 원격 경로 반환
  */
@@ -78,18 +90,22 @@ const ensureRemoteUploadedWav = async (
   baseUrl: string,
   localFilePath: string,
 ): Promise<string> => {
-  const cacheKey = `${baseUrl}::${localFilePath}`;
+  const resolvedPath = resolveLocalWavPath(localFilePath);
+  const cacheKey = `${baseUrl}::${resolvedPath}`;
   if (remoteUploadedPathCache.has(cacheKey)) {
     return remoteUploadedPathCache.get(cacheKey)!;
   }
 
-  if (!fs.existsSync(localFilePath)) {
+  if (!fs.existsSync(resolvedPath)) {
+    console.warn(
+      `[CosyVoice] ⚠️ 프롬프트 음원 파일을 로컬에서 찾을 수 없습니다: ${localFilePath} (확인 경로: ${resolvedPath})`,
+    );
     return localFilePath;
   }
 
   try {
-    const fileBuffer = fs.readFileSync(localFilePath);
-    const fileName = path.basename(localFilePath);
+    const fileBuffer = fs.readFileSync(resolvedPath);
+    const fileName = path.basename(resolvedPath);
     const formData = new FormData();
     const blob = new Blob([fileBuffer], { type: "audio/wav" });
     formData.append("files", blob, fileName);
@@ -117,7 +133,7 @@ const ensureRemoteUploadedWav = async (
     console.warn("[CosyVoice] 원격 파일 업로드 중 오류:", err);
   }
 
-  return localFilePath;
+  return resolvedPath;
 };
 
 /**
