@@ -31,14 +31,17 @@ export const CONFIG = {
     process.env.WHISPER_MODEL || "onnx-community/whisper-small",
   TTS_PRESET: process.env.TTS_PRESET || "seola",
 
-  // CosyVoice TTS 백엔드 설정 (상위 폴더 CosyVoice Gradio 5.x WebUI 연동)
+  // CosyVoice TTS 백엔드 설정 (원격 윈도우 서버 또는 로컬 CosyVoice Gradio 5.x WebUI)
   COSYVOICE_API_URL: (
-    process.env.COSYVOICE_API_URL || "http://127.0.0.1:8000"
+    process.env.COSYVOICE_API_URL || "http://192.168.50.100:50000"
   ).replace(/\/+$/, ""),
-  COSYVOICE_MODE: (process.env.COSYVOICE_MODE || "3초 음성 복제") as
+  COSYVOICE_MODE: (process.env.COSYVOICE_MODE || "3초 고속 복제") as
+    | "3초 고속 복제"
     | "3초 음성 복제"
+    | "다국어 교차 복제"
     | "교차 언어 복제"
     | "자연어 지시 제어"
+    | "사전 학습 음성"
     | "사전 학습 음색",
   COSYVOICE_PROMPT_TEXT:
     process.env.COSYVOICE_PROMPT_TEXT || "希望你以后能够做的比我还好呦。",

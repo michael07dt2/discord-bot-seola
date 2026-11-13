@@ -87,7 +87,14 @@ export interface VoicePreset {
   meloNoiseScaleW?: number;
   meloSdpRatio?: number;
   cosySpeed?: number;
-  cosyMode?: "3초 음성 복제" | "교차 언어 복제" | "자연어 지시 제어" | "사전 학습 음색";
+  cosyMode?:
+    | "3초 고속 복제"
+    | "3초 음성 복제"
+    | "다국어 교차 복제"
+    | "교차 언어 복제"
+    | "자연어 지시 제어"
+    | "사전 학습 음성"
+    | "사전 학습 음색";
   cosyPromptWav?: string;
   cosyPromptText?: string;
   cosyInstructText?: string;

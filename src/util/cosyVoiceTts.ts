@@ -1,12 +1,17 @@
+import fs from "fs";
+import path from "path";
 import { PassThrough, type Readable } from "stream";
 import CONFIG from "../config/index.ts";
 
 export interface CosyVoiceOptions {
   mode?:
     | "3초 음성 복제"
+    | "3초 고속 복제"
     | "교차 언어 복제"
+    | "다국어 교차 복제"
     | "자연어 지시 제어"
     | "사전 학습 음색"
+    | "사전 학습 음성"
     | undefined;
   promptText?: string | undefined;
   promptWavPath?: string | undefined;
@@ -63,6 +68,58 @@ const enqueueInference = <T>(fn: () => Promise<T>): Promise<T> => {
   return resultPromise;
 };
 
+// 원격 서버에 이미 업로드된 프롬프트 음원의 원격 파일 경로 캐시 (로컬경로 -> 원격경로)
+const remoteUploadedPathCache = new Map<string, string>();
+
+/**
+ * 프롬프트 음원을 CosyVoice 서버(로컬/원격 윈도우 등)의 /gradio_api/upload 엔드포인트에 업로드하고 원격 경로 반환
+ */
+const ensureRemoteUploadedWav = async (
+  baseUrl: string,
+  localFilePath: string,
+): Promise<string> => {
+  const cacheKey = `${baseUrl}::${localFilePath}`;
+  if (remoteUploadedPathCache.has(cacheKey)) {
+    return remoteUploadedPathCache.get(cacheKey)!;
+  }
+
+  if (!fs.existsSync(localFilePath)) {
+    return localFilePath;
+  }
+
+  try {
+    const fileBuffer = fs.readFileSync(localFilePath);
+    const fileName = path.basename(localFilePath);
+    const formData = new FormData();
+    const blob = new Blob([fileBuffer], { type: "audio/wav" });
+    formData.append("files", blob, fileName);
+
+    const uploadRes = await fetch(`${baseUrl}/gradio_api/upload`, {
+      method: "POST",
+      body: formData,
+    });
+
+    if (uploadRes.ok) {
+      const data = (await uploadRes.json()) as string[];
+      if (Array.isArray(data) && data[0]) {
+        console.log(
+          `[CosyVoice] 📤 원격 서버에 프롬프트 음원 동기화 완료: ${fileName} -> ${data[0]}`,
+        );
+        remoteUploadedPathCache.set(cacheKey, data[0]);
+        return data[0];
+      }
+    } else {
+      console.warn(
+        `[CosyVoice] 원격 파일 업로드 실패 (${uploadRes.status}), 로컬 경로 사용`,
+      );
+    }
+  } catch (err) {
+    console.warn("[CosyVoice] 원격 파일 업로드 중 오류:", err);
+  }
+
+  return localFilePath;
+};
+
 /**
  * CosyVoice Gradio 5.x API를 통해 텍스트를 고음질 오디오 스트림으로 합성 (순차 큐 적용)
  */
@@ -81,7 +138,15 @@ const doSynthesizeCosyVoiceSentence = async (
   if (!text) return null;
 
   const baseUrl = CONFIG.COSYVOICE_API_URL.replace(/\/+$/, "");
-  const mode = options?.mode || CONFIG.COSYVOICE_MODE;
+  const rawMode = options?.mode || CONFIG.COSYVOICE_MODE;
+  // 표준 CosyVoice WebUI ("3초 고속 복제") 및 로컬 구버전 ("3초 음성 복제") 상호 호환
+  const mode =
+    rawMode === "3초 음성 복제"
+      ? "3초 고속 복제"
+      : rawMode === "교차 언어 복제"
+        ? "다국어 교차 복제"
+        : rawMode;
+
   let promptText = options?.promptText || CONFIG.COSYVOICE_PROMPT_TEXT;
   // CosyVoice 3.0(Fun-CosyVoice3-0.5B) 필수 규격:
   // 프롬프트 텍스트 앞에 <|endofprompt|> 특수 토큰이 없으면 모델 AssertionError가 발생하므로 자동 보정
@@ -91,7 +156,10 @@ const doSynthesizeCosyVoiceSentence = async (
   const promptWavPath = options?.promptWavPath || CONFIG.COSYVOICE_PROMPT_WAV;
   const instructText =
     options?.instructText || CONFIG.COSYVOICE_INSTRUCT_TEXT || "";
-  const sftSpeaker = options?.sftSpeaker || "(사전 학습 음색 없음)";
+  const sftSpeaker =
+    options?.sftSpeaker && options.sftSpeaker !== "(사전 학습 음색 없음)"
+      ? options.sftSpeaker
+      : "";
   const speed = options?.speed ?? 1.0;
   const seed = options?.seed ?? 0;
   const timeoutMs = options?.timeoutMs ?? CONFIG.COSYVOICE_TIMEOUT_MS;
@@ -105,10 +173,16 @@ const doSynthesizeCosyVoiceSentence = async (
     ? ` [지시: "${instructText.length > 15 ? instructText.slice(0, 15) + "..." : instructText}"]`
     : "";
   console.log(
-    `[CosyVoice] 🎙️ 음성 합성 시작: "${displayExcerpt}" (모드: ${mode}${instructExcerpt}, 제한시간: ${timeoutMs / 1000}초)`,
+    `[CosyVoice] 🎙️ 음성 합성 시작: "${displayExcerpt}" (서버: ${baseUrl}, 모드: ${mode}${instructExcerpt}, 제한시간: ${timeoutMs / 1000}초)`,
   );
 
   try {
+    // 원격 또는 로컬 서버에 필요한 경우 프롬프트 음원을 동기화
+    const effectivePromptWavPath = await ensureRemoteUploadedWav(
+      baseUrl,
+      promptWavPath,
+    );
+
     // 1. 추론 요청 (POST /gradio_api/call/generate_audio)
     const callRes = await fetch(`${baseUrl}/gradio_api/call/generate_audio`, {
       method: "POST",
@@ -119,7 +193,7 @@ const doSynthesizeCosyVoiceSentence = async (
           mode,
           sftSpeaker,
           promptText,
-          { path: promptWavPath },
+          { path: effectivePromptWavPath, meta: { _type: "gradio.FileData" } },
           null, // 마이크 직접 녹음 파일
           instructText,
           seed,
