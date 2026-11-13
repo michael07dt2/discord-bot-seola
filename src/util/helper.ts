@@ -448,6 +448,9 @@ const streamCompletionWithSentences = async (
         stream: true,
         options: {
           num_predict: options?.maxTokens || 120,
+          repeat_penalty: 1.18,
+          temperature: 0.7,
+          top_p: 0.9,
         },
       }),
       signal: AbortSignal.timeout(15000),
@@ -555,7 +558,10 @@ const fetchOllamaChat = async (params: {
         stream: false,
         think: params.disableThinking === false ? true : false,
         options: {
-          num_predict: params.maxTokens || 512,
+          num_predict: params.maxTokens || 220,
+          repeat_penalty: 1.18,
+          temperature: 0.7,
+          top_p: 0.9,
         },
       }),
       signal: AbortSignal.timeout(35_000),
@@ -593,6 +599,37 @@ export const generateAIResponse = async (
   const userMessage = rawMessage.trim();
   if (!userMessage) {
     return null;
+  }
+
+  // 단순 이름 호출("설아야", "설아", "설아야?", "안녕" 등) 빠른 응답 인터셉터 (LLM 환각/무한 루프 방지 및 0초 즉각 응답)
+  const cleanedForWake = userMessage
+    .replace(/\/no_think/gi, "")
+    .replace(/^[.,!?~…"''"\s]+|[.,!?~…"''"\s]+$/g, "")
+    .trim();
+  const isSimpleWakeOnly =
+    /^(설아야?|서라야?|소라야?|수라야?|솔아야?|사라야?|안녕|안뇽|하이)$/i.test(
+      cleanedForWake,
+    );
+  if (isSimpleWakeOnly) {
+    const userPersona = await getUserPersona(userName);
+    let fastReply = "응, 나 여기 있어! 무슨 일이야? 헤헤~";
+    if (userPersona.personaId === "girlfriend") {
+      fastReply = "응, 듣고 있어 자기야! 무슨 일 있어?";
+    } else if (userPersona.personaId === "assistant") {
+      fastReply = `네, ${userName}님. 듣고 있습니다.`;
+    } else if (userPersona.personaId === "tsundere") {
+      fastReply = "흥, 왜 자꾸 불러? 무슨 일인데?";
+    } else if (userPersona.personaId === "senior") {
+      fastReply = "응, 듣고 있어~ 무슨 일 있어?";
+    } else if (userPersona.personaId === "cute") {
+      fastReply = "응! 나 여기 있어! 왜 불렀어? 헤헤~";
+    }
+
+    if (options?.onSentence) {
+      options.onSentence(fastReply);
+    }
+    await appendConversationContext(userName, userMessage, fastReply);
+    return fastReply;
   }
 
   // 대화형 모델 조회/변경 명령 처리
@@ -703,6 +740,8 @@ export const generateAIResponse = async (
   const voiceConstraint = options?.isVoiceMode
     ? `\n\n# Voice Call Mode (실시간 음성 통화 모드 - 최우선 절대 규칙)
 - 현재 텍스트 메신저가 아니라 디스코드 음성 채널에서 실시간 목소리로 통화 중이다.
+- [극도로 간결한 음성 답변]: 상대방과 실시간으로 대화가 자연스럽게 오갈 수 있도록 반드시 1~2문장(최대 3문장 이내, 50자 안팎)으로 명확하고 짧게 끝맺는다. 절대로 혼자서 독백하듯 길게 늘어놓거나 같은 말을 반복하지 마라.
+- [단순 호출/인사 대응]: 상대방이 단순히 이름만 부르거나("설아야", "설아") 짧게 인사한 경우, 장황한 설명이나 질문 없이 "응, 듣고 있어! 무슨 일이야?" 처럼 아주 가볍고 짧은 한 문장으로만 대답한다.
 - [자연스러운 대화 완성]: 문장이 도중에 어색하게 끊기지 않도록 온전한 문장 형태로 완성해서 끝맺는다.
 - [추론(Thinking) 및 독백 금지]: <think> 태그나 내부 추론/생각 과정을 절대로 출력하지 말고, 생각 과정 없이 즉시 말할 최종 대사만 바로 출력한다.
 - [괄호/지문/행동묘사 절대 금지]: TTS(음성 합성 엔진)가 그대로 소리 내어 읽으므로, 어조 지문, 표정 지문, 행동 묘사, 괄호 표현(예: (웃으며), (다정하게), **(목소리로 대답한다)**, [미소], *미소*)을 단 한 글자도 출력하지 마라.
@@ -781,14 +820,14 @@ export const generateAIResponse = async (
         toolMessages,
         options.onSentence,
         options?.isVoiceMode
-          ? { maxTokens: 512, disableThinking: true }
+          ? { maxTokens: 120, disableThinking: true }
           : undefined,
       );
     } else {
       responseContent = await fetchOllamaChat({
         model: selectedModel,
         messages: toolMessages,
-        maxTokens: 512,
+        maxTokens: 220,
         disableThinking: true,
       });
 
@@ -801,13 +840,13 @@ export const generateAIResponse = async (
       }
     }
   } else if (options?.onSentence) {
-    // 실시간 음성 통화 모드: 첫 문장이 생성되는 즉시 TTS 파이프라인으로 스트리밍 전달하여 응답 지연 최소화 (답변이 끊기지 않도록 512 토큰 제공 및 추론(Thinking) 비활성화)
+    // 실시간 음성 통화 모드: 첫 문장이 생성되는 즉시 TTS 파이프라인으로 스트리밍 전달하여 응답 지연 최소화 (간결하고 빠른 대화를 위해 120 토큰 제한 및 추론(Thinking) 비활성화)
     responseContent = await streamCompletionWithSentences(
       selectedModel,
       baseMessages,
       options.onSentence,
       options?.isVoiceMode
-        ? { maxTokens: 512, disableThinking: true }
+        ? { maxTokens: 120, disableThinking: true }
         : undefined,
     );
   } else {
@@ -815,7 +854,7 @@ export const generateAIResponse = async (
     responseContent = await fetchOllamaChat({
       model: selectedModel,
       messages: baseMessages,
-      maxTokens: 512,
+      maxTokens: 220,
       disableThinking: true,
     });
 

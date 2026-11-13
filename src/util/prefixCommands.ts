@@ -732,9 +732,15 @@ export const handlePrefixCommand = async (
     return;
   }
 
-  // "설아야"로 시작하는 메시지 처리 -> 호출어 "설아야"를 제거하고 본문만 전달
+  // "설아야"로 시작하는 메시지 처리 -> 호출어 "설아야"를 제거하거나 단순 호출 시 자연스럽게 처리
   if (message.content.startsWith("설아야")) {
-    message.content = message.content.replace(/^설아야\s*/, "");
+    const remaining = message.content.replace(/^설아야\s*/, "").trim();
+    if (!remaining || /^[.!?~^]+$/.test(remaining)) {
+      message.content = "설아야";
+      await chatAI(message);
+      return;
+    }
+    message.content = remaining;
     await chatAI(message);
     return;
   }

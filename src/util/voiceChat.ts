@@ -1471,8 +1471,8 @@ export const createSentenceSpeechPipeline = (
 ) => {
   // 고부하 신경망 TTS(CosyVoice)의 병렬 폭주 및 소켓 타임아웃을 방지하기 위해 작업 함수 큐로 순차 처리
   const synthesisQueue: (() => Promise<SynthesizedSpeechResource | null>)[] = [];
-  // 답변 받은 문장을 도중에 자르지 않고 온전히 모두 발화하도록 기본값을 무제한(Infinity)으로 설정
-  const maxSentences = options?.maxSentences ?? Infinity;
+  // 음성 통화 환경에 맞춰 발화 문장을 최대 3문장으로 제한 (과도하게 긴 대답 및 무한 루프 발화 방지)
+  const maxSentences = options?.maxSentences ?? 3;
   let enqueuedSentenceCount = 0;
   let isFinished = false;
   let wakeConsumer: (() => void) | null = null;
@@ -2023,6 +2023,7 @@ export const setupVoiceChatListener = (params: {
             connection,
             player,
             guildId,
+            { maxSentences: 3 },
           );
 
           const aiReply = await generateAIResponse(userName, promptText, {
