@@ -328,6 +328,11 @@
             <button class="btn btn-primary" id="playMusicBtn">재생</button>
             <button class="btn btn-secondary" id="stopMusicBtn">정지</button>
           </div>
+          <div class="control-row" style="margin-top: 6px; align-items: center; gap: 10px;">
+            <span style="font-size: 12px; color: var(--text-secondary); white-space: nowrap;">🔊 음악 볼륨:</span>
+            <input type="range" id="volumeSlider" min="0" max="100" value="35" style="flex: 1; accent-color: var(--accent); cursor: pointer;" />
+            <span id="volumeVal" style="font-size: 12px; font-weight: 700; color: var(--accent); min-width: 36px;">35%</span>
+          </div>
         </div>
       </div>
     </div>
@@ -444,6 +449,11 @@
       if (status.voicePreset) {
         presetVal.textContent = status.voicePreset.label;
         document.getElementById("presetSelect").value = status.voicePreset.id;
+      }
+      if (status.musicVolume !== undefined) {
+        const v = status.musicVolume;
+        document.getElementById("volumeSlider").value = v;
+        document.getElementById("volumeVal").textContent = v + "%";
       }
       activeSessions = status.sessions || [];
       sessionsVal.textContent = activeSessions.length + "개";
@@ -645,6 +655,21 @@
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ guildId, action: "stop" }),
+      });
+    });
+
+    const volumeSlider = document.getElementById("volumeSlider");
+    const volumeVal = document.getElementById("volumeVal");
+    volumeSlider.addEventListener("input", () => {
+      volumeVal.textContent = volumeSlider.value + "%";
+    });
+    volumeSlider.addEventListener("change", async () => {
+      const percent = parseInt(volumeSlider.value, 10);
+      const guildId = activeSessions[0]?.guildId;
+      await fetch("/api/control/music/volume", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ guildId, percent }),
       });
     });
 

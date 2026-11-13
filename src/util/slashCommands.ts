@@ -30,6 +30,8 @@ import {
   stopGuildMusic,
   getGuildCurrentTrack,
   createMusicTrackEmbed,
+  getGuildMusicVolumePercent,
+  setGuildMusicVolume,
 } from "./youtubeMusic.ts";
 import {
   getBotStatusReport,
@@ -314,6 +316,35 @@ export const slashCommands = [
         .setName("list")
         .setNameLocalization("ko", "목록")
         .setDescription("재생 가능한 로컬 음악 목록을 확인합니다."),
+    )
+    .addSubcommand((sub) =>
+      sub
+        .setName("volume")
+        .setNameLocalization("ko", "음량")
+        .setDescription("음악 재생 볼륨을 확인하거나 조절합니다 (0~100%).")
+        .addIntegerOption((opt) =>
+          opt
+            .setName("percent")
+            .setNameLocalization("ko", "퍼센트")
+            .setDescription("설정할 볼륨 (0~100, 기본 35%)")
+            .setMinValue(0)
+            .setMaxValue(100)
+            .setRequired(false),
+        ),
+    ),
+
+  new SlashCommandBuilder()
+    .setName("volume")
+    .setNameLocalization("ko", "볼륨")
+    .setDescription("음악 재생 볼륨을 확인하거나 조절합니다 (0~100%).")
+    .addIntegerOption((opt) =>
+      opt
+        .setName("percent")
+        .setNameLocalization("ko", "퍼센트")
+        .setDescription("설정할 볼륨 (0~100, 기본 35%)")
+        .setMinValue(0)
+        .setMaxValue(100)
+        .setRequired(false),
     ),
 
   new SlashCommandBuilder()
@@ -954,6 +985,34 @@ export const handleSlashCommand = async (
         return;
       }
 
+      if (sub === "volume") {
+        if (!interaction.guildId) return;
+        const inputPercent = interaction.options.getInteger("percent");
+        const current = getGuildMusicVolumePercent(interaction.guildId);
+
+        if (inputPercent === null || inputPercent === undefined) {
+          await interaction.editReply(
+            `🔊 현재 음악 재생 볼륨은 **${current}%**입니다.\n조절하려면 \`/music volume percent:<0~100>\` 또는 \`/volume percent:<0~100>\`을 사용하세요.`,
+          );
+          return;
+        }
+
+        const { percent } = await setGuildMusicVolume(interaction.guildId, inputPercent);
+        if (sharedStatusSnapshotGetter) {
+          notifyDashboardStatusChanged(sharedStatusSnapshotGetter());
+        }
+
+        await appendConversationContext(
+          userName,
+          `/music volume percent:${percent}`,
+          `음악 볼륨을 ${percent}%로 변경했습니다.`,
+        );
+        await interaction.editReply(
+          `🔊 음악 볼륨을 **${percent}%**로 설정했습니다! ${percent === 0 ? "🔇 (음소거)" : percent > 70 ? "📢 (매우 큼 주의)" : "✨"}`,
+        );
+        return;
+      }
+
       if (sub === "play") {
         const query =
           interaction.options.getString("query") ||
@@ -1023,7 +1082,36 @@ export const handleSlashCommand = async (
       }
     }
 
-    // 7. /search (검색)
+    // 7. /volume (음악 볼륨 조절)
+    if (commandName === "volume") {
+      if (!interaction.guildId) return;
+      const inputPercent = interaction.options.getInteger("percent");
+      const current = getGuildMusicVolumePercent(interaction.guildId);
+
+      if (inputPercent === null || inputPercent === undefined) {
+        await interaction.editReply(
+          `🔊 현재 음악 볼륨은 **${current}%**입니다.\n(변경: \`/volume percent:<0~100>\`)`,
+        );
+        return;
+      }
+
+      const { percent } = await setGuildMusicVolume(interaction.guildId, inputPercent);
+      if (sharedStatusSnapshotGetter) {
+        notifyDashboardStatusChanged(sharedStatusSnapshotGetter());
+      }
+
+      await appendConversationContext(
+        userName,
+        `/volume percent:${percent}`,
+        `음악 볼륨을 ${percent}%로 변경했습니다.`,
+      );
+      await interaction.editReply(
+        `🔊 음악 볼륨을 **${percent}%**로 설정했습니다! ${percent === 0 ? "🔇 (음소거)" : percent > 70 ? "📢 (매우 큼 주의)" : "✨"}`,
+      );
+      return;
+    }
+
+    // 8. /search (검색)
     if (commandName === "search") {
       const query = interaction.options.getString("query", true);
       const result = await performWebSearch(query);

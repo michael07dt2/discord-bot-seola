@@ -20,7 +20,12 @@ import {
   VOICE_PRESETS,
 } from "./voiceChat.ts";
 import { songMap } from "./songmap.ts";
-import { playMusicTrack, stopGuildMusic } from "./youtubeMusic.ts";
+import {
+  playMusicTrack,
+  stopGuildMusic,
+  getGuildMusicVolumePercent,
+  setGuildMusicVolume,
+} from "./youtubeMusic.ts";
 import type { AudioPlayer } from "@discordjs/voice";
 import {
   deleteUserMemory,
@@ -60,6 +65,7 @@ export interface DashboardStatusSnapshot {
     id: string;
     label: string;
   };
+  musicVolume: number;
   sessions: ActiveVoiceSessionStatus[];
 }
 
@@ -476,7 +482,27 @@ export const registerDashboardRoutes = (
     res.status(400).json({ error: "지원하지 않는 action입니다." });
   });
 
-  // 10. 개인화 장기 기억(RAG) REST API
+  // 10. 실시간 제어 API: 음악 볼륨 조절 (0~100)
+  app.post("/api/control/music/volume", async (req: Request, res: Response) => {
+    const { guildId, percent } = req.body || {};
+    if (percent === undefined || percent === null) {
+      res.status(400).json({ error: "percent가 필요합니다 (0~100)." });
+      return;
+    }
+
+    const targetGuildId = guildId || (getActiveVoiceSessions()[0]?.guildId ?? "default");
+    const result = await setGuildMusicVolume(targetGuildId, Number(percent));
+    notifyDashboardStatusChanged(getStatusSnapshot());
+
+    res.json({
+      success: true,
+      guildId: targetGuildId,
+      volume: result.percent,
+      scale: result.scale,
+    });
+  });
+
+  // 11. 개인화 장기 기억(RAG) REST API
   app.get("/api/memories", async (req: Request, res: Response) => {
     const userName = String(req.query["user"] || "micha");
     const memories = await listUserMemories(userName);

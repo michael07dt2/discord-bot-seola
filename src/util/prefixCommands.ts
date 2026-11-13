@@ -33,6 +33,8 @@ import {
   stopGuildMusic,
   getGuildCurrentTrack,
   createMusicTrackEmbed,
+  getGuildMusicVolumePercent,
+  setGuildMusicVolume,
 } from "./youtubeMusic.ts";
 import {
   getBotStatusReport,
@@ -165,6 +167,7 @@ export const handlePrefixCommand = async (
           name: "🎵 음악 재생 (텍스트 및 음성 명령 모두 가능)",
           value: [
             "`설아야 <곡명> 틀어줘` — 지정한 곡 재생 *(음성으로 \"<곡명> 틀어줘\" 가능)*",
+            "`!volume <0~100>` 또는 `!볼륨 <수치>` — 음악 재생 음량 조절 *(기본 35%)*",
             "지원 곡 키워드: `아리아`, `어웨이크`, `브레이크 더 체인`, `크레이지`, `리다인`, `노 머시`, `세컨드 라이트`, `댓 걸`, `바토리`, `미래소녀`",
           ].join("\n"),
         },
@@ -587,6 +590,54 @@ export const handlePrefixCommand = async (
       await loadingMsg.edit("오디오를 재생하는 중 오류가 발생했습니다.");
       return;
     }
+  }
+
+  // 음악 볼륨 조절 명령어 (!volume, !볼륨, !음량, 설아야 볼륨 ...)
+  if (
+    /^(!volume|!볼륨|!음량|설아야?\s*(?:음악\s*)?(?:볼륨|음량|소리))/i.test(
+      message.content.trim(),
+    )
+  ) {
+    const guildId = message.guildId;
+    if (!guildId) {
+      await message.reply("서버(길드) 채널에서만 음량을 조절할 수 있습니다.");
+      return;
+    }
+
+    const rawInput = message.content
+      .replace(/^(!volume|!볼륨|!음량|설아야?\s*(?:음악\s*)?(?:볼륨|음량|소리))\s*/i, "")
+      .replace(/(?:으로|로)?\s*(?:바꿔\s*줘|설정해\s*줘|조절해\s*줘|해\s*줘|바꿔|설정|조절)?$/i, "")
+      .trim();
+
+    const currentVolume = getGuildMusicVolumePercent(guildId);
+
+    if (!rawInput) {
+      await message.reply(
+        `🔊 현재 음악 볼륨은 **${currentVolume}%**입니다.\n(변경: \`!volume 20\`, \`!볼륨 35\`, \`!음량 50\`)`,
+      );
+      return;
+    }
+
+    const parsed = parseInt(rawInput.replace(/[^0-9]/g, ""), 10);
+    if (isNaN(parsed)) {
+      await message.reply(
+        `❌ 유효한 볼륨 숫자를 입력해주세요 (0~100).\n현재 볼륨: **${currentVolume}%**`,
+      );
+      return;
+    }
+
+    const { percent } = await setGuildMusicVolume(guildId, parsed);
+    notifyDashboardStatusChanged(getDashboardStatusSnapshot());
+
+    await message.reply(
+      `🔊 음악 볼륨을 **${percent}%**로 설정했어요! ${percent === 0 ? "🔇 (음소거)" : percent > 70 ? "📢 (매우 큼 주의)" : "✨"}`,
+    );
+    await appendConversationContext(
+      getUserKey(message),
+      message.content,
+      `음악 볼륨을 ${percent}%로 변경했습니다.`,
+    );
+    return;
   }
 
   if (message.content.startsWith("설아야 꺼져")) {

@@ -14,6 +14,7 @@ import youtubedl, { type Payload } from "youtube-dl-exec";
 import ffmpegStatic from "ffmpeg-static";
 import { EmbedBuilder } from "discord.js";
 import { songMap } from "./songmap.ts";
+import { getBotSetting, setBotSetting } from "./settings.ts";
 
 // prism-media 및 @discordjs/voice 가 내부적으로 ffmpeg-static 바이너리를 사용하도록 보장
 const staticPath =
@@ -48,6 +49,7 @@ export interface GuildMusicSession {
   requesterName?: string | undefined;
   startedAt: Date;
   subprocess?: any;
+  resource?: AudioResource<any> | undefined;
 }
 
 export interface PlayMusicResult {
@@ -55,6 +57,77 @@ export interface PlayMusicResult {
   track?: MusicTrackInfo;
   errorMessage?: string;
 }
+
+// 기본 음악 볼륨 (기존 100%는 너무 크므로 편안한 35%로 기본 조정)
+export const DEFAULT_MUSIC_VOLUME_PERCENT = 35;
+
+// 길드별 음악 볼륨 (0 ~ 100 퍼센트)
+const guildMusicVolumeMap = new Map<string, number>();
+
+/**
+ * 길드 음악 볼륨 조회 (퍼센트 단위: 0 ~ 100)
+ */
+export const getGuildMusicVolumePercent = (guildId?: string): number => {
+  if (!guildId) return DEFAULT_MUSIC_VOLUME_PERCENT;
+  return guildMusicVolumeMap.get(guildId) ?? DEFAULT_MUSIC_VOLUME_PERCENT;
+};
+
+/**
+ * 길드 음악 볼륨 배율 조회 (0.0 ~ 1.0)
+ */
+export const getGuildMusicVolumeScale = (guildId?: string): number => {
+  return getGuildMusicVolumePercent(guildId) / 100;
+};
+
+/**
+ * 길드 음악 볼륨 변경 및 실시간 오디오 리소스 반영 (0 ~ 100)
+ */
+export const setGuildMusicVolume = async (
+  guildId: string,
+  rawPercent: number,
+  options?: { persist?: boolean },
+): Promise<{ percent: number; scale: number }> => {
+  const percent = Math.max(0, Math.min(100, Math.round(rawPercent)));
+  const scale = percent / 100;
+
+  guildMusicVolumeMap.set(guildId, percent);
+
+  // 현재 재생 중인 오디오 리소스가 있으면 실시간으로 음량 즉시 조절
+  const session = activeGuildMusicSessions.get(guildId);
+  if (session?.resource?.volume) {
+    session.resource.volume.setVolume(scale);
+    console.log(`[Music] 🔊 ${guildId} 길드 실시간 음악 볼륨 조절: ${percent}% (scale: ${scale})`);
+  }
+
+  if (options?.persist !== false) {
+    try {
+      await setBotSetting(`music_volume:${guildId}`, String(percent));
+    } catch (err) {
+      console.warn(`[Music] 음악 볼륨 DB 저장 실패 (${guildId}):`, err);
+    }
+  }
+
+  return { percent, scale };
+};
+
+/**
+ * DB에서 길드 음악 볼륨 복원
+ */
+export const initGuildMusicVolume = async (guildId: string): Promise<number> => {
+  try {
+    const saved = await getBotSetting(`music_volume:${guildId}`);
+    if (saved) {
+      const parsed = parseInt(saved, 10);
+      if (!isNaN(parsed) && parsed >= 0 && parsed <= 100) {
+        guildMusicVolumeMap.set(guildId, parsed);
+        return parsed;
+      }
+    }
+  } catch (err) {
+    console.warn(`[Music] 길드 음악 볼륨 복원 실패 (${guildId}):`, err);
+  }
+  return DEFAULT_MUSIC_VOLUME_PERCENT;
+};
 
 // 길드별 현재 재생 중인 음악 상태 및 백그라운드 프로세스 관리
 const activeGuildMusicSessions = new Map<string, GuildMusicSession>();
@@ -183,11 +256,15 @@ export const createYouTubeAudioResource = (params: {
     throw new Error("유튜브 오디오 스트림(stdout)을 생성할 수 없습니다.");
   }
 
-  // 3. discord.js AudioResource 로 래핑 (FFmpeg 가 자동으로 파이프 스트림 트랜스코딩)
+  // 3. discord.js AudioResource 로 래핑 (inlineVolume 활성화)
   const resource = createAudioResource(subprocess.stdout as Readable, {
     inputType: StreamType.Arbitrary,
+    inlineVolume: true,
     metadata: params.track,
   });
+
+  const scale = getGuildMusicVolumeScale(params.guildId);
+  resource.volume?.setVolume(scale);
 
   // 4. 길드 세션 등록
   activeGuildMusicSessions.set(params.guildId, {
@@ -196,6 +273,7 @@ export const createYouTubeAudioResource = (params: {
     requesterName: params.requesterName,
     startedAt: new Date(),
     subprocess,
+    resource,
   });
 
   return resource;
@@ -263,7 +341,11 @@ export const playMusicTrack = async (params: {
 
       const resource = createAudioResource(localSong.filePath, {
         inputType: StreamType.Arbitrary,
+        inlineVolume: true,
       });
+
+      const scale = getGuildMusicVolumeScale(guildId);
+      resource.volume?.setVolume(scale);
 
       player.play(resource);
       if (connection) {
@@ -275,6 +357,7 @@ export const playMusicTrack = async (params: {
         track: localSong,
         requesterName,
         startedAt: new Date(),
+        resource,
       });
 
       // 5초 이내 재생 상태 진입 모니터링
@@ -330,7 +413,10 @@ export const playMusicTrack = async (params: {
 export const createMusicTrackEmbed = (
   track: MusicTrackInfo,
   requesterName?: string,
+  guildId?: string,
 ): EmbedBuilder => {
+  const volume = getGuildMusicVolumePercent(guildId);
+
   if (track.isLocal) {
     return new EmbedBuilder()
       .setColor(0xff85a2)
@@ -339,9 +425,10 @@ export const createMusicTrackEmbed = (
       .addFields(
         { name: "음원 출처", value: "📁 로컬 라이브러리", inline: true },
         { name: "파일명", value: `\`${track.fileName}\``, inline: true },
+        { name: "볼륨", value: `🔊 ${volume}%`, inline: true },
         { name: "신청자", value: requesterName || "설아", inline: true },
       )
-      .setFooter({ text: "설아 뮤직 플레이어 • 정지: /music stop 또는 !stop" })
+      .setFooter({ text: "설아 뮤직 플레이어 • 볼륨: /music volume 또는 !volume" })
       .setTimestamp();
   }
 
@@ -353,9 +440,10 @@ export const createMusicTrackEmbed = (
     .addFields(
       { name: "채널 / 아티스트", value: track.uploader || "YouTube", inline: true },
       { name: "재생 시간", value: track.formattedDuration, inline: true },
+      { name: "볼륨", value: `🔊 ${volume}%`, inline: true },
       { name: "신청자", value: requesterName || "설아", inline: true },
     )
-    .setFooter({ text: "설아 뮤직 플레이어 • 정지: /music stop 또는 !stop" })
+    .setFooter({ text: "설아 뮤직 플레이어 • 볼륨: /music volume 또는 !volume" })
     .setTimestamp();
 
   if (track.thumbnail) {

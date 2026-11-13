@@ -26,6 +26,7 @@ import {
   registerDashboardRoutes,
   type DashboardStatusSnapshot,
 } from "./util/dashboard.ts";
+import { getGuildMusicVolumePercent } from "./util/youtubeMusic.ts";
 import {
   checkAndAcquireProcessLock,
   releaseProcessLock,
@@ -80,6 +81,7 @@ const getDashboardStatusSnapshot = (): DashboardStatusSnapshot => {
       id: preset.id,
       label: preset.label,
     },
+    musicVolume: getGuildMusicVolumePercent(),
     sessions: getActiveVoiceSessions(),
   };
 };

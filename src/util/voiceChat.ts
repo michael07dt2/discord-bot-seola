@@ -36,6 +36,8 @@ import {
   playMusicTrack,
   stopGuildMusic,
   createMusicTrackEmbed,
+  getGuildMusicVolumePercent,
+  setGuildMusicVolume,
 } from "./youtubeMusic.ts";
 import {
   getBotSetting,
@@ -1919,6 +1921,46 @@ export const setupVoiceChatListener = (params: {
               guildId,
               "응, 노래 껐어!",
             );
+            return;
+          }
+
+          // 2.5 음성 명령: 음악 볼륨 조절 ("설아야 소리 줄여줘", "볼륨 낮춰줘", "볼륨 20으로 해줘")
+          const volumeMatch = transcribedText.match(
+            /(?:(?:설아야?|서라야?|소라야?)\s*)?(?:음악\s*|노래\s*)?(?:볼륨|음량|소리)\s*(?:(\d{1,3})(?:으로|로)?\s*(?:해\s*줘|맞춰\s*줘|바꿔\s*줘)?|(줄여\s*줘|낮춰\s*줘|내려\s*줘)|(키워\s*줘|높여\s*줘|올려\s*줘)|(몇\s*이야|어때))/i,
+          );
+          if (volumeMatch) {
+            const currentVol = getGuildMusicVolumePercent(guildId);
+            let targetVol = currentVol;
+            let replyText = "";
+
+            if (volumeMatch[1]) {
+              targetVol = parseInt(volumeMatch[1], 10);
+              replyText = `음악 볼륨을 ${targetVol}%로 맞췄어!`;
+            } else if (volumeMatch[2]) {
+              targetVol = Math.max(0, currentVol - 15);
+              replyText = `음악 소리 줄였어! 지금 ${targetVol}%야.`;
+            } else if (volumeMatch[3]) {
+              targetVol = Math.min(100, currentVol + 15);
+              replyText = `음악 소리 키웠어! 지금 ${targetVol}%야.`;
+            } else {
+              replyText = `현재 음악 볼륨은 ${currentVol}%야!`;
+            }
+
+            if (targetVol !== currentVol) {
+              await setGuildMusicVolume(guildId, targetVol);
+            }
+
+            await recordVoiceTranscript({
+              guildName: voiceChannel.guild.name,
+              channelName: voiceChannel.name,
+              userName,
+              userText: transcribedText,
+              botReply: replyText,
+              actionType: "chat",
+              durationSec,
+            });
+            await appendConversationContext(userName, transcribedText, replyText);
+            await speakInVoiceChannel(connection, player, guildId, replyText);
             return;
           }
 
