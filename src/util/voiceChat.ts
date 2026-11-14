@@ -44,6 +44,7 @@ import {
 } from "./youtubeMusic.ts";
 import {
   getGuildAudioPlayer,
+  getGuildTtsAudioPlayer,
   destroyGuildAudioPlayer,
 } from "./audioPlayer.ts";
 import {
@@ -654,6 +655,7 @@ export const getActiveVoiceSessions = (): ActiveVoiceSessionStatus[] => {
 export const leaveVoiceChannel = (guildId: string): boolean => {
   stopGuildMusic(guildId);
   destroyGuildAudioPlayer(guildId);
+  ttsPausedMusicGuilds.delete(guildId);
   const session = guildSessions.get(guildId);
   if (session) {
     try {
@@ -1465,11 +1467,91 @@ export const groupSentencesForTTS = (
   return result;
 };
 
+// 길드별 TTS 재생 직렬화 락 및 음악 일시정지 상태 추적
+const guildTtsLocks = new Map<string, Promise<void>>();
+const ttsPausedMusicGuilds = new Set<string>();
+
+/**
+ * TTS 발화 시작 전 길드별 재생 락을 획득하고, 음악이 재생 중이면 일시정지한 뒤 TTS 전용 플레이어로 전환합니다.
+ */
+const acquireGuildTtsPlayback = async (
+  connection: VoiceConnection,
+  musicPlayer: AudioPlayer,
+  guildId: string,
+): Promise<{ ttsPlayer: AudioPlayer; release: () => void }> => {
+  const prevLock = guildTtsLocks.get(guildId) ?? Promise.resolve();
+  let releaseLock!: () => void;
+  const currentLock = new Promise<void>((resolve) => {
+    releaseLock = resolve;
+  });
+  guildTtsLocks.set(guildId, currentLock);
+
+  await prevLock;
+
+  // 음악이 재생/버퍼링 중이면 리소스를 파괴하지 않고 일시정지하여 발화 종료 후 이어서 재생할 수 있도록 보존
+  const hasActiveTrack = Boolean(getGuildCurrentTrack(guildId));
+  const musicStatus = musicPlayer.state.status;
+  if (
+    hasActiveTrack &&
+    (musicStatus === AudioPlayerStatus.Playing ||
+      musicStatus === AudioPlayerStatus.Buffering)
+  ) {
+    try {
+      musicPlayer.pause(true);
+      ttsPausedMusicGuilds.add(guildId);
+      console.log(`[VoiceChat] ⏸️ TTS 발화를 위해 음악 재생 일시정지 (길드: ${guildId})`);
+    } catch (err) {
+      console.warn(`[VoiceChat] 음악 일시정지 실패 (길드: ${guildId}):`, err);
+    }
+  }
+
+  setGuildPlaybackMode(guildId, "tts");
+  const ttsPlayer = getGuildTtsAudioPlayer(guildId);
+  connection.subscribe(ttsPlayer);
+
+  return {
+    ttsPlayer,
+    release: () => {
+      try {
+        connection.subscribe(musicPlayer);
+      } catch {}
+
+      const wasMusicPausedByTts = ttsPausedMusicGuilds.delete(guildId);
+      const stillHasTrack = Boolean(getGuildCurrentTrack(guildId));
+      if (wasMusicPausedByTts && stillHasTrack) {
+        const status = musicPlayer.state.status;
+        if (
+          status === AudioPlayerStatus.Paused ||
+          status === AudioPlayerStatus.AutoPaused
+        ) {
+          try {
+            musicPlayer.unpause();
+            console.log(`[VoiceChat] ▶️ TTS 발화 종료 — 일시정지된 음악 재개 (길드: ${guildId})`);
+          } catch (err) {
+            console.warn(`[VoiceChat] 음악 재개 실패 (길드: ${guildId}):`, err);
+          }
+        }
+        setGuildPlaybackMode(guildId, "music");
+      } else {
+        const session = guildSessions.get(guildId);
+        if (session && session.playbackMode === "tts") {
+          session.playbackMode = stillHasTrack ? "music" : "idle";
+        }
+      }
+
+      if (guildTtsLocks.get(guildId) === currentLock) {
+        guildTtsLocks.delete(guildId);
+      }
+      releaseLock();
+    },
+  };
+};
+
 /**
  * 문장 단위 스트리밍 합성 및 순차 재생 파이프라인 생성
  * - 문장이 들어오는 즉시 백그라운드에서 MeloTTS-Korean 합성을 선행(Prefetch) 시작하고,
- *   첫 문장 합성이 완료되는 즉시 AudioPlayer에서 재생을 시작하여 체감 지연시간을 최소화합니다.
- * - 앞 문장이 재생되는 동안 뒷 문장이 백그라운드에서 미리 합성되므로 문장 간 끊김 없이 이어집니다.
+ *   첫 문장 합성이 완료되는 즉시 TTS 전용 AudioPlayer에서 재생을 시작하여 체감 지연시간을 최소화합니다.
+ * - 음악 재생 중 발화가 시작되면 음악을 일시정지했다가 발화 종료 후 멈춘 지점부터 자동 재개합니다.
  */
 export const createSentenceSpeechPipeline = (
   connection: VoiceConnection,
@@ -1484,7 +1566,7 @@ export const createSentenceSpeechPipeline = (
   let enqueuedSentenceCount = 0;
   let isFinished = false;
   let wakeConsumer: (() => void) | null = null;
-  let hasStartedPlayback = false;
+  let ttsPlaybackHandle: { ttsPlayer: AudioPlayer; release: () => void } | null = null;
 
   const notifyQueueUpdated = () => {
     if (wakeConsumer) {
@@ -1510,10 +1592,12 @@ export const createSentenceSpeechPipeline = (
         const ttsResult = await nextSynthTask();
         if (!ttsResult) continue;
 
-        if (!hasStartedPlayback) {
-          hasStartedPlayback = true;
-          setGuildPlaybackMode(guildId, "tts");
-          connection.subscribe(player);
+        if (!ttsPlaybackHandle) {
+          ttsPlaybackHandle = await acquireGuildTtsPlayback(
+            connection,
+            player,
+            guildId,
+          );
         }
 
         try {
@@ -1521,9 +1605,9 @@ export const createSentenceSpeechPipeline = (
             inputType: ttsResult.inputType,
           });
 
-          player.play(resource);
-          await entersState(player, AudioPlayerStatus.Playing, 5_000);
-          await entersState(player, AudioPlayerStatus.Idle, 60_000);
+          ttsPlaybackHandle.ttsPlayer.play(resource);
+          await entersState(ttsPlaybackHandle.ttsPlayer, AudioPlayerStatus.Playing, 5_000);
+          await entersState(ttsPlaybackHandle.ttsPlayer, AudioPlayerStatus.Idle, 60_000);
         } catch (error) {
           console.error("[VoiceChat] 문장 단위 TTS 오디오 재생 중 오류:", error);
         } finally {
@@ -1537,9 +1621,14 @@ export const createSentenceSpeechPipeline = (
         }
       }
     } finally {
-      const session = guildSessions.get(guildId);
-      if (session && session.playbackMode === "tts") {
-        session.playbackMode = "idle";
+      if (ttsPlaybackHandle) {
+        ttsPlaybackHandle.release();
+        ttsPlaybackHandle = null;
+      } else {
+        const session = guildSessions.get(guildId);
+        if (session && session.playbackMode === "tts") {
+          session.playbackMode = getGuildCurrentTrack(guildId) ? "music" : "idle";
+        }
       }
     }
   })();
