@@ -1186,21 +1186,27 @@ export const handleSlashCommand = async (
         }
 
         try {
-          const guildPlayer = getGuildAudioPlayer(voiceChannel.guild.id);
-          const connection = await connectToVoiceChannel(voiceChannel);
-          setupVoiceChatListener({
-            client: interaction.client,
-            connection,
-            voiceChannel,
-            textChannel: interaction.channel?.isSendable() ? interaction.channel : null,
-            player: guildPlayer,
-          });
+          const guildId = voiceChannel.guild.id;
+          const guildPlayer = getGuildAudioPlayer(guildId);
+          let connection = getVoiceConnection(guildId);
+          const hasActiveSession = getActiveVoiceSessions().some((s) => s.guildId === guildId);
+
+          if (!connection || connection.joinConfig.channelId !== voiceChannel.id || !hasActiveSession) {
+            connection = await connectToVoiceChannel(voiceChannel);
+            setupVoiceChatListener({
+              client: interaction.client,
+              connection,
+              voiceChannel,
+              textChannel: interaction.channel?.isSendable() ? interaction.channel : null,
+              player: guildPlayer,
+            });
+          }
 
           // 음악 모드로 전환 및 탐색/재생 시작
-          setGuildPlaybackMode(voiceChannel.guild.id, "music");
+          setGuildPlaybackMode(guildId, "music");
 
           const playResult = await playMusicTrack({
-            guildId: voiceChannel.guild.id,
+            guildId,
             query,
             player: guildPlayer,
             connection,

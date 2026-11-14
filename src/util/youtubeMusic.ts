@@ -515,14 +515,16 @@ export const skipGuildMusic = async (
 
   transitioningGuilds.add(guildId);
   try {
+    const queue = guildMusicQueues.get(guildId);
+    const nextItem = queue && queue.length > 0 ? queue.shift() : undefined;
+    const remainingQueue = queue ? queue.length : 0;
+
     stopGuildMusic(guildId, { clearQueue: false });
     if (targetPlayer) {
       targetPlayer.stop(true);
     }
 
-    const queue = guildMusicQueues.get(guildId);
-    if (queue && queue.length > 0 && targetPlayer) {
-      const nextItem = queue.shift()!;
+    if (nextItem && targetPlayer) {
       startResolvedTrack({
         guildId,
         track: nextItem.track,
@@ -533,7 +535,7 @@ export const skipGuildMusic = async (
       return {
         skipped,
         nextTrack: nextItem.track,
-        remainingQueue: queue.length,
+        remainingQueue,
       };
     }
 

@@ -40,6 +40,7 @@ import {
   setGuildMusicVolume,
   skipGuildMusic,
   getGuildCurrentTrack,
+  getGuildMusicQueue,
 } from "./youtubeMusic.ts";
 import {
   getGuildAudioPlayer,
@@ -1724,11 +1725,14 @@ export const setupVoiceChatListener = (params: {
     cleanup: () => {},
   };
 
-  // 음악 재생 종료로 플레이어가 Idle로 돌아올 때 재생 모드 초기화 및 스트림 정리
+  // 음악 재생 및 대기열이 모두 종료되어 플레이어가 Idle로 돌아올 때 재생 모드만 초기화 (대기열/트랙 정리는 youtubeMusic.ts가 담당)
   const onPlayerIdle = () => {
-    if (session.playbackMode === "music") {
+    if (
+      session.playbackMode === "music" &&
+      !getGuildCurrentTrack(guildId) &&
+      getGuildMusicQueue(guildId).length === 0
+    ) {
       session.playbackMode = "idle";
-      stopGuildMusic(guildId);
     }
   };
   player.on(AudioPlayerStatus.Idle, onPlayerIdle);
