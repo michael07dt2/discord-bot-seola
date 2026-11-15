@@ -18,6 +18,8 @@ import {
   ButtonStyle,
   EmbedBuilder,
   type ButtonInteraction,
+  type Message,
+  type SendableChannels,
 } from "discord.js";
 import { songMap } from "./songmap.ts";
 import { getBotSetting, setBotSetting } from "./settings.ts";
@@ -116,6 +118,7 @@ export const setGuildMusicVolume = async (
     session.resource.volume.setVolume(scale);
     console.log(`[Music] 🔊 ${guildId} 길드 실시간 음악 볼륨 조절: ${percent}% (scale: ${scale})`);
   }
+  refreshGuildMusicControlPanel(guildId);
 
   if (options?.persist !== false) {
     try {
@@ -153,6 +156,8 @@ const activeGuildMusicSessions = new Map<string, GuildMusicSession>();
 const guildMusicQueues = new Map<string, QueuedMusicItem[]>();
 // 길드별 반복 재생 모드 (off: 끔, track: 한 곡 반복, queue: 전체 대기열 반복)
 const guildLoopModes = new Map<string, MusicLoopMode>();
+// 길드별 최하단 뮤직 컨트롤러 메시지 1개 유지용 캐시
+const guildControlMessages = new Map<string, Message>();
 
 export const getGuildLoopMode = (guildId?: string): MusicLoopMode => {
   if (!guildId) return "off";
@@ -312,6 +317,7 @@ export const stopGuildMusic = (
   if (options?.clearQueue !== false) {
     guildMusicQueues.delete(guildId);
     guildLoopModes.delete(guildId);
+    refreshGuildMusicControlPanel(guildId, { stopped: true });
   }
 };
 
@@ -485,6 +491,7 @@ const startResolvedTrack = (params: {
     entersState(player, AudioPlayerStatus.Playing, 5_000).catch((err) =>
       console.warn("[Music] 플레이어 재생 상태 진입 지연:", err?.message || err),
     );
+    refreshGuildMusicControlPanel(guildId);
     return;
   }
 
@@ -502,6 +509,7 @@ const startResolvedTrack = (params: {
   entersState(player, AudioPlayerStatus.Playing, 8_000).catch((err) =>
     console.warn("[Music] 유튜브 스트림 재생 상태 진입 지연:", err?.message || err),
   );
+  refreshGuildMusicControlPanel(guildId);
 };
 
 /**
@@ -592,6 +600,7 @@ const ensureGuildMusicIdleHandler = (
     }
 
     console.log(`[Music:${guildId}] ✅ 모든 대기열 음악 재생 완료`);
+    refreshGuildMusicControlPanel(guildId, { stopped: true });
     binding?.onQueueEnd?.();
   });
 };
@@ -638,6 +647,7 @@ export const skipGuildMusic = async (
       };
     }
 
+    refreshGuildMusicControlPanel(guildId, { stopped: true });
     binding?.onQueueEnd?.();
     return {
       skipped,
@@ -898,12 +908,12 @@ export const createMusicControlPanel = (
     new ButtonBuilder()
       .setCustomId("music_toggle_pause")
       .setLabel(isPaused ? "▶️ 재개" : "⏸️ 일시정지")
-      .setStyle(isPaused ? ButtonStyle.Success : ButtonStyle.Secondary)
+      .setStyle(isPaused ? ButtonStyle.Success : ButtonStyle.Primary)
       .setDisabled(isStopped),
     new ButtonBuilder()
       .setCustomId("music_skip")
       .setLabel("⏭️ 스킵")
-      .setStyle(ButtonStyle.Primary)
+      .setStyle(ButtonStyle.Secondary)
       .setDisabled(isStopped),
     new ButtonBuilder()
       .setCustomId("music_loop")
@@ -925,6 +935,60 @@ export const createMusicControlPanel = (
     embeds: [embed],
     components: [row],
   };
+};
+
+/**
+ * 기존 뮤직 컨트롤러 메시지가 있으면 제자리에서 최신 상태로 수정 (정보 변경 시 동기화용)
+ */
+export const refreshGuildMusicControlPanel = (
+  guildId: string,
+  options?: { stopped?: boolean },
+): void => {
+  const existingMsg = guildControlMessages.get(guildId);
+  if (!existingMsg) return;
+
+  const payload = createMusicControlPanel(guildId, getGuildAudioPlayer(guildId), options);
+  existingMsg.edit(payload).catch(() => {
+    if (guildControlMessages.get(guildId)?.id === existingMsg.id) {
+      guildControlMessages.delete(guildId);
+    }
+  });
+};
+
+/**
+ * 채널 최하단에 뮤직 컨트롤러를 항상 1개만 유지하도록 전송/갱신
+ * - 채널의 마지막 메시지가 이미 컨트롤러면 제자리 수정, 아니면 기존 컨트롤러를 삭제하고 최하단에 새로 전송
+ */
+export const sendOrUpdateMusicControlPanel = async (
+  guildId: string,
+  channel: SendableChannels | null | undefined,
+  player?: AudioPlayer,
+): Promise<void> => {
+  if (!channel || !channel.isSendable()) return;
+
+  const payload = createMusicControlPanel(guildId, player);
+  const existingMsg = guildControlMessages.get(guildId);
+
+  if (existingMsg && existingMsg.channelId === channel.id) {
+    const lastMessageId = (channel as { lastMessageId?: string | null }).lastMessageId;
+    if (lastMessageId && lastMessageId === existingMsg.id) {
+      try {
+        await existingMsg.edit(payload);
+        return;
+      } catch {
+        // 수정 실패 시 삭제 후 새로 전송
+      }
+    }
+    await existingMsg.delete().catch(() => {});
+    guildControlMessages.delete(guildId);
+  }
+
+  try {
+    const sent = await channel.send(payload);
+    guildControlMessages.set(guildId, sent);
+  } catch (err) {
+    console.warn(`[Music:${guildId}] 컨트롤러 임베드 전송 실패:`, err);
+  }
 };
 
 /**

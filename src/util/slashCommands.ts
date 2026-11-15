@@ -32,6 +32,7 @@ import {
   getGuildCurrentTrack,
   createMusicTrackEmbed,
   createMusicControlPanel,
+  sendOrUpdateMusicControlPanel,
   getGuildMusicVolumePercent,
   setGuildMusicVolume,
   getGuildMusicQueue,
@@ -821,9 +822,17 @@ export const handleSlashCommand = async (
             : `🎶 ${track.title} 음악 재생을 시작했습니다.`,
         );
         await interaction.editReply({ embeds: [embed] });
-        await interaction.followUp(
-          createMusicControlPanel(voiceChannel.guild.id, guildPlayer),
-        );
+        if (interaction.channel?.isSendable()) {
+          await sendOrUpdateMusicControlPanel(
+            voiceChannel.guild.id,
+            interaction.channel,
+            guildPlayer,
+          );
+        } else {
+          await interaction.followUp(
+            createMusicControlPanel(voiceChannel.guild.id, guildPlayer),
+          );
+        }
       } catch (e: any) {
         console.error("음악 재생 연결 실패:", e);
         setGuildPlaybackMode(voiceChannel.guild.id, "idle");

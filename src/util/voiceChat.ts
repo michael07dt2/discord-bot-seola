@@ -36,7 +36,7 @@ import {
   playMusicTrack,
   stopGuildMusic,
   createMusicTrackEmbed,
-  createMusicControlPanel,
+  sendOrUpdateMusicControlPanel,
   getGuildMusicVolumePercent,
   setGuildMusicVolume,
   skipGuildMusic,
@@ -2139,9 +2139,7 @@ export const setupVoiceChatListener = (params: {
                   },
                 );
                 session.textChannel.send({ embeds: [embed] }).catch(() => {});
-                session.textChannel
-                  .send(createMusicControlPanel(guildId, player))
-                  .catch(() => {});
+                void sendOrUpdateMusicControlPanel(guildId, session.textChannel, player);
               }
 
               await recordVoiceTranscript({

@@ -33,7 +33,7 @@ import {
   stopGuildMusic,
   getGuildCurrentTrack,
   createMusicTrackEmbed,
-  createMusicControlPanel,
+  sendOrUpdateMusicControlPanel,
   getGuildMusicVolumePercent,
   setGuildMusicVolume,
   getGuildMusicQueue,
@@ -706,9 +706,11 @@ export const handlePrefixCommand = async (
       );
       await loadingMsg.edit({ content: null, embeds: [embed] });
       if (message.channel.isSendable()) {
-        await message.channel
-          .send(createMusicControlPanel(voiceChannel.guild.id, guildAudioPlayer))
-          .catch(() => {});
+        await sendOrUpdateMusicControlPanel(
+          voiceChannel.guild.id,
+          message.channel,
+          guildAudioPlayer,
+        );
       }
       return;
     } catch (error: any) {
