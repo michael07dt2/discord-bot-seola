@@ -14,9 +14,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# PM2 전역 설치 (컨테이너 PID 1로 포그라운드 실행을 지원하는 pm2-runtime 제공)
-RUN npm install -g pm2
-
 # 의존성 파일 복사
 COPY package.json package-lock.json ./
 
@@ -33,5 +30,5 @@ EXPOSE 13000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
   CMD curl -f http://localhost:13000/health || exit 1
 
-# PM2 런타임으로 ecosystem.config.cjs 실행 (Docker PID 1 유지 및 프로세스 자동 복구)
-CMD ["pm2-runtime", "ecosystem.config.cjs"]
+# Node.js 프로세스를 컨테이너 PID 1로 직접 실행 (재시작은 Docker Compose restart 정책으로 관리)
+CMD ["node", "--experimental-strip-types", "src/index.ts"]

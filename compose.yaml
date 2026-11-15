@@ -18,6 +18,7 @@ services:
       dockerfile: Dockerfile
     container_name: seola-bot
     restart: unless-stopped
+    mem_limit: 2500m
     depends_on:
       - pg
     ports:
@@ -38,5 +39,4 @@ services:
       - "host.docker.internal:host-gateway"
     volumes:
       - ./src:/app/src
-      - ./ecosystem.config.cjs:/app/ecosystem.config.cjs
       - ./asset:/app/asset
