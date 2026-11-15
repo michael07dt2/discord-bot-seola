@@ -148,15 +148,38 @@ export const slashCommands = [
     ),
 
   new SlashCommandBuilder()
+    .setName("join")
+    .setNameLocalization("ko", "입장")
+    .setDescription("내가 접속한 음성 채널에 설아를 부릅니다."),
+
+  new SlashCommandBuilder()
+    .setName("speak")
+    .setNameLocalization("ko", "발화")
+    .setDescription("음성 채널에 있는 설아가 지정한 문장을 TTS로 말하게 합니다.")
+    .addStringOption((opt) =>
+      opt
+        .setName("text")
+        .setNameLocalization("ko", "말할내용")
+        .setDescription("설아가 소리 내어 읽을 문장")
+        .setRequired(true),
+    ),
+
+  new SlashCommandBuilder()
+    .setName("play")
+    .setNameLocalization("ko", "재생")
+    .setDescription("로컬 음원 또는 유튜브 노래(플레이리스트 포함)를 재생합니다.")
+    .addStringOption((opt) =>
+      opt
+        .setName("query")
+        .setNameLocalization("ko", "곡명_또는_링크")
+        .setDescription("곡명, 아티스트, 또는 유튜브 URL (플레이리스트 지원)")
+        .setRequired(true),
+    ),
+
+  new SlashCommandBuilder()
     .setName("voice")
     .setNameLocalization("ko", "음성통화")
     .setDescription("음성 채널 연결 및 실시간 통화를 제어합니다.")
-    .addSubcommand((sub) =>
-      sub
-        .setName("join")
-        .setNameLocalization("ko", "입장")
-        .setDescription("내가 접속한 음성 채널에 설아를 부릅니다."),
-    )
     .addSubcommand((sub) =>
       sub
         .setName("leave")
@@ -180,19 +203,6 @@ export const slashCommands = [
         .setName("status")
         .setNameLocalization("ko", "상태")
         .setDescription("현재 음성 통화 세션 상태를 확인합니다."),
-    )
-    .addSubcommand((sub) =>
-      sub
-        .setName("speak")
-        .setNameLocalization("ko", "발화")
-        .setDescription("음성 채널에 있는 설아가 지정한 문장을 TTS로 말하게 합니다.")
-        .addStringOption((opt) =>
-          opt
-            .setName("text")
-            .setNameLocalization("ko", "말할내용")
-            .setDescription("설아가 소리 내어 읽을 문장")
-            .setRequired(true),
-        ),
     )
     .addSubcommand((sub) =>
       sub
@@ -291,20 +301,7 @@ export const slashCommands = [
   new SlashCommandBuilder()
     .setName("music")
     .setNameLocalization("ko", "음악")
-    .setDescription("음성 채널에서 로컬 음악 또는 유튜브 노래를 재생하거나 멈춥니다.")
-    .addSubcommand((sub) =>
-      sub
-        .setName("play")
-        .setNameLocalization("ko", "재생")
-        .setDescription("로컬 음원 또는 유튜브 노래를 검색하여 재생합니다.")
-        .addStringOption((opt) =>
-          opt
-            .setName("query")
-            .setNameLocalization("ko", "곡명_또는_링크")
-            .setDescription("곡명, 아티스트, 또는 유튜브 URL (예: 아이유 밤편지, 뉴진스 Ditto)")
-            .setRequired(true),
-        ),
-    )
+    .setDescription("음성 채널에서 재생 중인 음악과 대기열을 관리합니다.")
     .addSubcommand((sub) =>
       sub
         .setName("stop")
@@ -678,21 +675,94 @@ export const handleSlashCommand = async (
       }
     }
 
-    // 3. /voice (음성통화)
-    if (commandName === "voice") {
-      const sub = interaction.options.getSubcommand();
+    // 3-0. /join (음성 채널 입장)
+    if (commandName === "join") {
+      const member = interaction.member as GuildMember;
+      const voiceChannel = member?.voice?.channel as VoiceBasedChannel | null;
+      if (!voiceChannel) {
+        await interaction.editReply("❌ 먼저 음성 채널에 입장한 후 명령어를 실행해주세요!");
+        return;
+      }
+
+      try {
+        const guildPlayer = getGuildAudioPlayer(voiceChannel.guild.id);
+        const connection = await connectToVoiceChannel(voiceChannel);
+        setupVoiceChatListener({
+          client: interaction.client,
+          connection,
+          voiceChannel,
+          textChannel: interaction.channel?.isSendable() ? interaction.channel : null,
+          player: guildPlayer,
+        });
+        if (sharedStatusSnapshotGetter) {
+          notifyDashboardStatusChanged(sharedStatusSnapshotGetter());
+        }
+        await appendConversationContext(
+          userName,
+          "/join",
+          `${voiceChannel.name} 음성 채널에 입장했습니다.`,
+        );
+        await interaction.editReply(
+          `🌸 **${voiceChannel.name}** 음성 채널에 설아가 입장했습니다! 이제 자유롭게 말씀해 보세요. (1:1 통화 시 즉시 대화, 다수일 땐 '설아야' 호출)`,
+        );
+      } catch (err: any) {
+        await interaction.editReply(`❌ 음성 채널 입장 실패: ${err.message}`);
+      }
+      return;
+    }
+
+    // 3-1. /speak (음성 채널 TTS 발화)
+    if (commandName === "speak") {
+      const text = interaction.options.getString("text", true);
+      if (!interaction.guildId) return;
+
+      const connection = getVoiceConnection(interaction.guildId);
+      if (!connection) {
+        await interaction.editReply(
+          "❌ 설아가 현재 이 서버의 음성 채널에 연결되어 있지 않습니다. 먼저 `/join`으로 불러주세요!",
+        );
+        return;
+      }
+
+      try {
+        await speakInVoiceChannel(
+          connection,
+          getGuildAudioPlayer(interaction.guildId),
+          interaction.guildId,
+          text,
+        );
+        await appendConversationContext(
+          userName,
+          `/speak text:${text}`,
+          text,
+        );
+        await interaction.editReply(`🗣️ **${userName}**님의 요청으로 발화했습니다: "${text}"`);
+      } catch (err: any) {
+        console.error("[SlashCommands] /speak 실패:", err);
+        await interaction.editReply("❌ 음성 발화 중 오류가 발생했습니다.");
+      }
+      return;
+    }
+
+    // 3-2. /play (음악 재생)
+    if (commandName === "play") {
+      const query = interaction.options.getString("query", true);
       const member = interaction.member as GuildMember;
       const voiceChannel = member?.voice?.channel as VoiceBasedChannel | null;
 
-      if (sub === "join") {
-        if (!voiceChannel) {
-          await interaction.editReply("❌ 먼저 음성 채널에 입장한 후 명령어를 실행해주세요!");
-          return;
-        }
+      if (!voiceChannel) {
+        await interaction.editReply("❌ 먼저 음성 채널에 입장한 후 음악을 재생해주세요!");
+        return;
+      }
 
-        try {
-          const guildPlayer = getGuildAudioPlayer(voiceChannel.guild.id);
-          const connection = await connectToVoiceChannel(voiceChannel);
+      try {
+        const guildId = voiceChannel.guild.id;
+        const guildPlayer = getGuildAudioPlayer(guildId);
+        let connection = getVoiceConnection(guildId);
+        const hasActiveSession = getActiveVoiceSessions().some((s) => s.guildId === guildId);
+
+        if (!connection || connection.joinConfig.channelId !== voiceChannel.id || !hasActiveSession) {
+          connection = await connectToVoiceChannel(voiceChannel);
           setupVoiceChatListener({
             client: interaction.client,
             connection,
@@ -700,22 +770,71 @@ export const handleSlashCommand = async (
             textChannel: interaction.channel?.isSendable() ? interaction.channel : null,
             player: guildPlayer,
           });
-          if (sharedStatusSnapshotGetter) {
-            notifyDashboardStatusChanged(sharedStatusSnapshotGetter());
-          }
-          await appendConversationContext(
-            userName,
-            "/voice join",
-            `${voiceChannel.name} 음성 채널에 입장했습니다.`,
-          );
-          await interaction.editReply(
-            `🌸 **${voiceChannel.name}** 음성 채널에 설아가 입장했습니다! 이제 자유롭게 말씀해 보세요. (1:1 통화 시 즉시 대화, 다수일 땐 '설아야' 호출)`,
-          );
-        } catch (err: any) {
-          await interaction.editReply(`❌ 음성 채널 입장 실패: ${err.message}`);
         }
-        return;
+
+        setGuildPlaybackMode(guildId, "music");
+
+        const playResult = await playMusicTrack({
+          guildId,
+          query,
+          player: guildPlayer,
+          connection,
+          requesterName: userName,
+          onQueueEnd: () => {
+            setGuildPlaybackMode(voiceChannel.guild.id, "idle");
+            if (sharedStatusSnapshotGetter) {
+              notifyDashboardStatusChanged(sharedStatusSnapshotGetter());
+            }
+          },
+        });
+
+        if (!playResult.success || !playResult.track) {
+          if (!getGuildCurrentTrack(voiceChannel.guild.id)) {
+            setGuildPlaybackMode(voiceChannel.guild.id, "idle");
+          }
+          await interaction.editReply(
+            `❌ ${playResult.errorMessage || "음악을 재생할 수 없습니다."}`,
+          );
+          return;
+        }
+
+        const track = playResult.track;
+        const embed = createMusicTrackEmbed(
+          track,
+          userName,
+          voiceChannel.guild.id,
+          {
+            ...(playResult.queued ? { queued: true } : {}),
+            ...(playResult.queuePosition !== undefined
+              ? { queuePosition: playResult.queuePosition }
+              : {}),
+            ...(playResult.playlistCount !== undefined
+              ? { playlistCount: playResult.playlistCount }
+              : {}),
+          },
+        );
+        await appendConversationContext(
+          userName,
+          `/play query:${query}`,
+          playResult.queued
+            ? `📜 대기열 #${playResult.queuePosition}번에 ${track.title} 곡을 추가했습니다.`
+            : `🎶 ${track.title} 음악 재생을 시작했습니다.`,
+        );
+        await interaction.editReply({ embeds: [embed] });
+        await interaction.followUp(
+          createMusicControlPanel(voiceChannel.guild.id, guildPlayer),
+        );
+      } catch (e: any) {
+        console.error("음악 재생 연결 실패:", e);
+        setGuildPlaybackMode(voiceChannel.guild.id, "idle");
+        await interaction.editReply("❌ 음악 재생 중 예기치 못한 오류가 발생했습니다.");
       }
+      return;
+    }
+
+    // 3. /voice (음성통화)
+    if (commandName === "voice") {
+      const sub = interaction.options.getSubcommand();
 
       if (sub === "leave") {
         if (!interaction.guildId) {
@@ -767,41 +886,9 @@ export const handleSlashCommand = async (
           .setDescription(
             currentSession
               ? `• 접속 채널: **${currentSession.channelName}**\n• 현재 상태: **${currentSession.voiceChatEnabled ? "🟢 활성 (경청 중)" : "⏸️ 일시 정지"}**\n• 재생 모드: \`${currentSession.playbackMode}\`\n• 활성 화자 수: ${currentSession.activeSpeakerCount}명`
-              : "현재 이 서버의 음성 채널에 접속해 있지 않습니다. `/voice join`으로 불러보세요!",
+              : "현재 이 서버의 음성 채널에 접속해 있지 않습니다. `/join`으로 불러보세요!",
           );
         await interaction.editReply({ embeds: [embed] });
-        return;
-      }
-
-      if (sub === "speak") {
-        const text = interaction.options.getString("text", true);
-        if (!interaction.guildId) return;
-
-        const connection = getVoiceConnection(interaction.guildId);
-        if (!connection) {
-          await interaction.editReply(
-            "❌ 설아가 현재 이 서버의 음성 채널에 연결되어 있지 않습니다. 먼저 `/voice join`으로 불러주세요!",
-          );
-          return;
-        }
-
-        try {
-          await speakInVoiceChannel(
-            connection,
-            getGuildAudioPlayer(interaction.guildId),
-            interaction.guildId,
-            text,
-          );
-          await appendConversationContext(
-            userName,
-            `/voice speak text:${text}`,
-            text,
-          );
-          await interaction.editReply(`🗣️ **${userName}**님의 요청으로 발화했습니다: "${text}"`);
-        } catch (err: any) {
-          console.error("[SlashCommands] voice speak 실패:", err);
-          await interaction.editReply("❌ 음성 발화 중 오류가 발생했습니다.");
-        }
         return;
       }
 
@@ -981,8 +1068,8 @@ export const handleSlashCommand = async (
             new EmbedBuilder()
               .setColor(0xff85a2)
               .setTitle("🎵 재생 가능한 로컬 노래 목록")
-              .setDescription(`${listText}\n\n*유튜브 곡은 \`/music play query:<곡명 또는 유튜브 링크>\`로 바로 재생할 수 있어요!*`)
-              .setFooter({ text: "재생: /music play query:<곡명/링크>" }),
+              .setDescription(`${listText}\n\n*유튜브 곡은 \`/play query:<곡명 또는 유튜브 링크>\`로 바로 재생할 수 있어요!*`)
+              .setFooter({ text: "재생: /play query:<곡명/링크>" }),
           ],
         });
         return;
@@ -1166,102 +1253,6 @@ export const handleSlashCommand = async (
         await interaction.editReply(
           `🔊 음악 볼륨을 **${percent}%**로 설정했습니다! ${percent === 0 ? "🔇 (음소거)" : percent > 70 ? "📢 (매우 큼 주의)" : "✨"}`,
         );
-        return;
-      }
-
-      if (sub === "play") {
-        const query =
-          interaction.options.getString("query") ||
-          interaction.options.getString("title") ||
-          "";
-
-        if (!query.trim()) {
-          await interaction.editReply("❌ 재생할 곡명이나 유튜브 링크를 입력해주세요.");
-          return;
-        }
-
-        const member = interaction.member as GuildMember;
-        const voiceChannel = member?.voice?.channel as VoiceBasedChannel | null;
-        if (!voiceChannel) {
-          await interaction.editReply("❌ 먼저 음성 채널에 입장한 후 음악을 재생해주세요!");
-          return;
-        }
-
-        try {
-          const guildId = voiceChannel.guild.id;
-          const guildPlayer = getGuildAudioPlayer(guildId);
-          let connection = getVoiceConnection(guildId);
-          const hasActiveSession = getActiveVoiceSessions().some((s) => s.guildId === guildId);
-
-          if (!connection || connection.joinConfig.channelId !== voiceChannel.id || !hasActiveSession) {
-            connection = await connectToVoiceChannel(voiceChannel);
-            setupVoiceChatListener({
-              client: interaction.client,
-              connection,
-              voiceChannel,
-              textChannel: interaction.channel?.isSendable() ? interaction.channel : null,
-              player: guildPlayer,
-            });
-          }
-
-          // 음악 모드로 전환 및 탐색/재생 시작
-          setGuildPlaybackMode(guildId, "music");
-
-          const playResult = await playMusicTrack({
-            guildId,
-            query,
-            player: guildPlayer,
-            connection,
-            requesterName: userName,
-            onQueueEnd: () => {
-              setGuildPlaybackMode(voiceChannel.guild.id, "idle");
-              if (sharedStatusSnapshotGetter) {
-                notifyDashboardStatusChanged(sharedStatusSnapshotGetter());
-              }
-            },
-          });
-
-          if (!playResult.success || !playResult.track) {
-            if (!getGuildCurrentTrack(voiceChannel.guild.id)) {
-              setGuildPlaybackMode(voiceChannel.guild.id, "idle");
-            }
-            await interaction.editReply(
-              `❌ ${playResult.errorMessage || "음악을 재생할 수 없습니다."}`,
-            );
-            return;
-          }
-
-          const track = playResult.track;
-          const embed = createMusicTrackEmbed(
-            track,
-            userName,
-            voiceChannel.guild.id,
-            {
-              ...(playResult.queued ? { queued: true } : {}),
-              ...(playResult.queuePosition !== undefined
-                ? { queuePosition: playResult.queuePosition }
-                : {}),
-              ...(playResult.playlistCount !== undefined
-                ? { playlistCount: playResult.playlistCount }
-                : {}),
-            },
-          );
-          await appendConversationContext(
-            userName,
-            `/music play query:${query}`,
-            playResult.queued
-              ? `📜 대기열 #${playResult.queuePosition}번에 ${track.title} 곡을 추가했습니다.`
-              : `🎶 ${track.title} 음악 재생을 시작했습니다.`,
-          );
-          await interaction.editReply({ embeds: [embed] });
-          await interaction.followUp(
-            createMusicControlPanel(voiceChannel.guild.id, guildPlayer),
-          );
-        } catch (e: any) {
-          console.error("음악 재생 연결 실패:", e);
-          setGuildPlaybackMode(voiceChannel.guild.id, "idle");
-          await interaction.editReply("❌ 음악 재생 중 예기치 못한 오류가 발생했습니다.");
-        }
         return;
       }
     }
@@ -1488,9 +1479,9 @@ export const handleSlashCommand = async (
           {
             name: "🎙️ 실시간 음성 통화 및 목소리",
             value: [
-              "`/voice join` 또는 `설아야 이리온` — 음성 채널 입장 및 실시간 통화",
+              "`/join` 또는 `설아야 이리온` — 음성 채널 입장 및 실시간 통화",
               "`/voice leave` 또는 `설아야 꺼져` — 음성 채널 퇴장",
-              "`/voice speak text:<내용>` — 음성 채널에서 텍스트 TTS 발화",
+              "`/speak text:<내용>` — 음성 채널에서 텍스트 TTS 발화",
               `\`/preset [voice]\` 또는 \`!voice <이름>\` — 목소리 변경 (현재: **${currentPreset.label}**)`,
               "지원 프리셋: `kei`, `qwen`, `cosy`, `reva`, `gamgyuri`, `myoya`, `myoya_cosy`, `seola`, `lively`, `calm`, `whisper`, `melo`, `ava`, `sunhi`",
             ].join("\n"),
@@ -1498,7 +1489,7 @@ export const handleSlashCommand = async (
           {
             name: "🎵 음악 및 유튜브 재생 (대기열/볼륨)",
             value: [
-              "`/music play <query>` 또는 `설아야 <곡명> 틀어줘` — 음악 재생 (재생 중이면 대기열 추가)",
+              "`/play <query>` 또는 `설아야 <곡명> 틀어줘` — 음악 재생 (재생 중이면 대기열 추가)",
               "`/music queue` 또는 `!queue` — 현재 재생 곡 및 대기열 목록 확인",
               "`/music skip` 또는 `!skip` — 다음 곡으로 건너뛰기",
               "`/music remove <index>` / `/music clear` — 대기열 곡 삭제 및 비우기",
