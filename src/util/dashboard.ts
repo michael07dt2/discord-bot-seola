@@ -81,6 +81,10 @@ export interface DashboardStatusSnapshot {
   botTag: string;
   uptimeSec: number;
   memoryMb: number;
+  persona?: {
+    id: string;
+    name: string;
+  };
   voicePreset: {
     id: string;
     label: string;
@@ -383,17 +387,22 @@ export const registerDashboardRoutes = (
 
   // 6. 실시간 제어 API: 페르소나 변경
   app.post("/api/control/persona", async (req: Request, res: Response) => {
-    const { userName = "micha", personaId } = req.body || {};
+    const { userName = "micha", personaId, applyToAllUsers } = req.body || {};
     if (!personaId || !(personaId in PERSONA_DEFINITIONS)) {
       res.status(400).json({ error: "유효하지 않은 페르소나 ID입니다." });
       return;
     }
 
     try {
-      const result = await setUserPersona(userName, personaId as PersonaId);
+      const result = await setUserPersona(userName, personaId as PersonaId, undefined, {
+        applyToAllUsers: Boolean(applyToAllUsers),
+      });
+      notifyDashboardStatusChanged(getStatusSnapshot());
       res.json({
         success: true,
-        message: `${userName}님의 페르소나가 ${result.persona.name}(으)로 변경되었습니다.`,
+        message: applyToAllUsers
+          ? `전체 기본 페르소나가 ${result.persona.name}(으)로 변경되었습니다.`
+          : `${userName}님의 페르소나가 ${result.persona.name}(으)로 변경되었습니다.`,
       });
     } catch (err: any) {
       res.status(500).json({ error: err.message });

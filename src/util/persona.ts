@@ -298,15 +298,36 @@ export const ensureUserPersonasTable = async () => {
 
 // 전역 기본 페르소나 (기본값: girlfriend)
 let globalDefaultPersonaId: PersonaId = "girlfriend";
+let globalDefaultCustomPrompt: string | undefined;
 
 /**
- * DB에서 마지막으로 저장된 전역 기본 페르소나 복원 (재부팅 유지)
+ * 현재 전역 기본 페르소나 정보 조회 (대시보드 및 상태 동기화용)
+ */
+export const getCurrentDefaultPersona = (): {
+  id: PersonaId;
+  name: string;
+  customPrompt?: string | undefined;
+} => {
+  const def = PERSONA_DEFINITIONS[globalDefaultPersonaId] || PERSONA_DEFINITIONS.girlfriend;
+  return {
+    id: def.id,
+    name: def.name,
+    customPrompt: globalDefaultCustomPrompt,
+  };
+};
+
+/**
+ * DB에서 마지막으로 저장된 전역 기본 페르소나 복원 (재부팅/업데이트 유지)
  */
 export const initPersonaFromDb = async (): Promise<PersonaId> => {
   try {
-    const saved = await getBotSetting("default_persona");
+    const [saved, savedCustom] = await Promise.all([
+      getBotSetting("default_persona"),
+      getBotSetting("default_persona_custom_prompt"),
+    ]);
     if (saved && saved in PERSONA_DEFINITIONS) {
       globalDefaultPersonaId = saved as PersonaId;
+      globalDefaultCustomPrompt = savedCustom || undefined;
       console.log(
         `[Persona] 💾 재부팅 이전 저장된 기본 페르소나 복원 완료: ${PERSONA_DEFINITIONS[globalDefaultPersonaId].name} (${globalDefaultPersonaId})`,
       );
@@ -348,6 +369,7 @@ export const getUserPersona = async (
 
   const defaultPersona: { personaId: PersonaId; customPrompt?: string | undefined } = {
     personaId: globalDefaultPersonaId,
+    customPrompt: globalDefaultCustomPrompt,
   };
   userPersonaCache.set(userName, defaultPersona);
   return defaultPersona;
@@ -358,18 +380,32 @@ export const setUserPersona = async (
   userName: string,
   personaId: PersonaId,
   customPrompt?: string | undefined,
+  options?: { applyToAllUsers?: boolean },
 ): Promise<{ success: boolean; persona: PersonaDefinition; customPrompt?: string | undefined }> => {
   const definition = PERSONA_DEFINITIONS[personaId];
   if (!definition) {
     throw new Error(`존재하지 않는 페르소나 ID입니다: ${personaId}`);
   }
 
-  userPersonaCache.set(userName, { personaId, customPrompt });
   globalDefaultPersonaId = personaId;
+  globalDefaultCustomPrompt = customPrompt;
 
-  // DB에 유저별 페르소나 및 시스템 전역 기본 페르소나 동시 영구 저장 (재부팅 후에도 유지)
+  if (options?.applyToAllUsers) {
+    userPersonaCache.clear();
+  }
+  userPersonaCache.set(userName, { personaId, customPrompt });
+
+  // DB에 유저별 페르소나 및 시스템 전역 기본 페르소나 동시 영구 저장 (재부팅/업데이트 후에도 유지)
   try {
     await ensureUserPersonasTable();
+    if (options?.applyToAllUsers) {
+      await db.update(userPersonasTable).set({
+        personaId,
+        customPrompt: customPrompt || null,
+        updatedAt: new Date(),
+      });
+    }
+
     await db
       .insert(userPersonasTable)
       .values({
@@ -387,8 +423,9 @@ export const setUserPersona = async (
         },
       });
 
-    // 봇 전역 기본 페르소나로도 저장
+    // 봇 전역 기본 페르소나 및 커스텀 프롬프트도 영구 저장
     await setBotSetting("default_persona", personaId);
+    await setBotSetting("default_persona_custom_prompt", customPrompt || "");
   } catch (error) {
     console.error("사용자 페르소나 DB 저장 중 오류:", error);
   }

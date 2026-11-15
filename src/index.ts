@@ -16,7 +16,10 @@ import {
   preloadWhisperModel,
   restoreVoiceSessionsIfRecent,
 } from "./util/voiceChat.ts";
-import { initPersonaFromDb } from "./util/persona.ts";
+import {
+  getCurrentDefaultPersona,
+  initPersonaFromDb,
+} from "./util/persona.ts";
 import {
   registerDashboardRoutes,
   type DashboardStatusSnapshot,
@@ -55,6 +58,7 @@ const discordClient = new Client({
 // 대시보드 및 실시간 상태 동기화를 위한 스냅샷 생성자
 const getDashboardStatusSnapshot = (): DashboardStatusSnapshot => {
   const preset = getCurrentVoicePreset();
+  const persona = getCurrentDefaultPersona();
   const sessions = getActiveVoiceSessions();
   const musicStates = sessions.map((s) => {
     const current = getGuildCurrentTrack(s.guildId);
@@ -79,6 +83,10 @@ const getDashboardStatusSnapshot = (): DashboardStatusSnapshot => {
     botTag: discordClient.user?.tag || "Seola Bot",
     uptimeSec: Math.floor(process.uptime()),
     memoryMb: Math.round(process.memoryUsage().rss / 1024 / 1024),
+    persona: {
+      id: persona.id,
+      name: persona.name,
+    },
     voicePreset: {
       id: preset.id,
       label: preset.label,

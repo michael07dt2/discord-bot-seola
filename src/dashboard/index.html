@@ -94,8 +94,8 @@
 
     .control-grid {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-      gap: 16px;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px;
     }
     .control-card {
       background: var(--bg-card);
@@ -105,25 +105,32 @@
       display: flex;
       flex-direction: column;
       gap: 10px;
+      min-width: 0;
+      overflow: hidden;
+    }
+    .control-card.wide {
+      grid-column: 1 / -1;
     }
     .control-card label {
       font-size: 12px; font-weight: 600; color: var(--text-secondary);
       text-transform: uppercase; letter-spacing: 0.5px;
     }
     .control-row {
-      display: flex; gap: 8px; align-items: center;
+      display: flex; gap: 8px; align-items: center; min-width: 0; flex-wrap: wrap;
     }
     select, input[type="text"] {
-      flex: 1; background: var(--bg-user); border: 1px solid var(--border);
+      flex: 1 1 0%; min-width: 0; max-width: 100%;
+      background: var(--bg-user); border: 1px solid var(--border);
       color: var(--text-primary); padding: 8px 12px; border-radius: 8px;
       font-size: 13px; outline: none; transition: border-color 0.15s;
+      overflow: hidden; text-overflow: ellipsis;
     }
     select:focus, input[type="text"]:focus { border-color: var(--accent); }
 
     .btn {
       padding: 8px 14px; border-radius: 8px; font-size: 13px; font-weight: 600;
-      border: none; cursor: pointer; display: inline-flex; align-items: center; gap: 6px;
-      transition: all 0.15s ease;
+      border: none; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+      transition: all 0.15s ease; white-space: nowrap; flex-shrink: 0;
     }
     .btn-primary { background: var(--accent); color: white; }
     .btn-primary:hover { opacity: 0.9; transform: translateY(-1px); }
@@ -140,9 +147,13 @@
     .metric-card {
       background: var(--bg-secondary); border: 1px solid var(--border);
       border-radius: 12px; padding: 14px 18px; display: flex; flex-direction: column; gap: 4px;
+      min-width: 0; overflow: hidden;
     }
     .metric-card .title { font-size: 12px; color: var(--text-muted); }
-    .metric-card .val { font-size: 20px; font-weight: 700; color: var(--text-primary); }
+    .metric-card .val {
+      font-size: 18px; font-weight: 700; color: var(--text-primary);
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
 
     /* 대화록 및 메모리 탭 영역 */
     .content-section {
@@ -200,6 +211,7 @@
 
     .speech-bubble {
       padding: 10px 14px; border-radius: 10px; font-size: 14px; line-height: 1.5;
+      overflow-wrap: anywhere; word-break: break-word;
     }
     .user-bubble {
       background: var(--bg-user); border-left: 3px solid var(--blue);
@@ -223,6 +235,7 @@
     .memory-card {
       background: var(--bg-card); border: 1px solid var(--border); border-radius: 10px;
       padding: 12px 14px; display: flex; flex-direction: column; gap: 8px;
+      min-width: 0; overflow-wrap: anywhere; word-break: break-word;
     }
     .memory-card-header {
       display: flex; justify-content: space-between; font-size: 11px; color: var(--text-muted);
@@ -234,26 +247,29 @@
       padding: 8px 10px; border-radius: 8px;
       background: rgba(0, 0, 0, 0.25); border: 1px solid var(--border);
       font-size: 12px; color: var(--text-secondary);
+      min-width: 0; overflow-wrap: anywhere; word-break: break-word;
     }
     .status-chip {
       display: inline-flex; align-items: center; gap: 4px;
       padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 600;
+      white-space: nowrap; flex-shrink: 0;
     }
     .status-chip.on { background: rgba(52, 211, 153, 0.15); color: var(--green); }
     .status-chip.paused { background: rgba(251, 191, 36, 0.15); color: var(--amber); }
     .status-chip.off { background: rgba(100, 116, 139, 0.2); color: var(--text-muted); }
     .now-playing-box {
       background: rgba(0, 0, 0, 0.25); border: 1px solid var(--border);
-      border-radius: 8px; padding: 8px 10px; font-size: 12px;
+      border-radius: 8px; padding: 10px 12px; font-size: 12px;
       display: flex; flex-direction: column; gap: 6px;
+      min-width: 0; overflow-wrap: anywhere; word-break: break-word;
     }
     .queue-chips {
-      display: flex; flex-wrap: wrap; gap: 6px;
+      display: flex; flex-wrap: wrap; gap: 6px; min-width: 0;
     }
     .queue-chip {
       background: var(--bg-user); border: 1px solid var(--border);
-      padding: 2px 8px; border-radius: 6px; font-size: 11px; color: var(--text-secondary);
-      max-width: 220px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      padding: 3px 8px; border-radius: 6px; font-size: 11px; color: var(--text-secondary);
+      max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     }
 
     /* 토스트 알림 */
@@ -278,6 +294,7 @@
 
     @media (max-width: 768px) {
       header { flex-direction: column; align-items: flex-start; gap: 10px; }
+      .control-grid { grid-template-columns: 1fr; }
       .memory-form { grid-template-columns: 1fr; }
     }
   </style>
@@ -381,10 +398,10 @@
         </div>
 
         <!-- 음악/유튜브 재생 제어 -->
-        <div class="control-card">
+        <div class="control-card wide">
           <label>🎵 음악 및 유튜브 재생 제어</label>
-          <div class="control-row" style="flex-wrap: wrap;">
-            <select id="songSelect" style="flex: 1; min-width: 140px;">
+          <div class="control-row">
+            <select id="songSelect" style="flex: 1 1 180px;">
               <option value="">직접 입력 (유튜브/검색어)</option>
               <option value="아리아" selected>아리아 (Aria)</option>
               <option value="어웨이크">어웨이크 (Awake)</option>
@@ -397,7 +414,7 @@
               <option value="바토리">바토리 (Bathory)</option>
               <option value="미래소녀">미래소녀 (Future Girl)</option>
             </select>
-            <input type="text" id="songCustomInput" placeholder="유튜브 곡명 또는 URL 입력..." style="flex: 1.5; min-width: 180px; padding: 7px 12px; background: rgba(0,0,0,0.3); border: 1px solid var(--border); border-radius: 8px; color: var(--text-primary); font-size: 13px;" />
+            <input type="text" id="songCustomInput" placeholder="유튜브 곡명 또는 URL 입력..." style="flex: 2 1 220px;" />
             <button class="btn btn-primary" id="playMusicBtn">재생</button>
             <button class="btn btn-secondary" id="skipMusicBtn">⏭️ 다음곡</button>
             <button class="btn btn-secondary" id="stopMusicBtn">정지</button>
@@ -424,8 +441,12 @@
         <span class="val" id="memoryVal">0 MB</span>
       </div>
       <div class="metric-card">
+        <span class="title">현재 페르소나</span>
+        <span class="val" id="personaVal" style="font-size: 15px; color: var(--purple);">-</span>
+      </div>
+      <div class="metric-card">
         <span class="title">현재 TTS 목소리</span>
-        <span class="val" id="presetVal" style="font-size: 16px; color: var(--accent);">-</span>
+        <span class="val" id="presetVal" style="font-size: 15px; color: var(--accent);">-</span>
       </div>
       <div class="metric-card">
         <span class="title">활성 음성 채널 수</span>
@@ -513,6 +534,7 @@
 
     const uptimeVal = document.getElementById("uptimeVal");
     const memoryVal = document.getElementById("memoryVal");
+    const personaVal = document.getElementById("personaVal");
     const presetVal = document.getElementById("presetVal");
     const sessionsVal = document.getElementById("sessionsVal");
     const botTagPill = document.getElementById("botTagPill");
@@ -559,6 +581,10 @@
       botTagPill.textContent = "🤖 " + (status.botTag || "Seola");
       memoryVal.textContent = (status.memoryMb || 0) + " MB";
       uptimeVal.textContent = formatUptime(status.uptimeSec || 0);
+      if (status.persona) {
+        personaVal.textContent = status.persona.name;
+        document.getElementById("personaSelect").value = status.persona.id;
+      }
       if (status.voicePreset) {
         presetVal.textContent = status.voicePreset.label;
         document.getElementById("presetSelect").value = status.voicePreset.id;
@@ -717,12 +743,17 @@
     // 5. 원격 제어 이벤트 리스너
     document.getElementById("applyPersonaBtn").addEventListener("click", async () => {
       const personaId = document.getElementById("personaSelect").value;
-      const userName = userFilter.value || "micha";
+      const selectedUser = userFilter.value;
+      const userName = selectedUser || "micha";
       try {
         const res = await fetch("/api/control/persona", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ userName, personaId }),
+          body: JSON.stringify({
+            userName,
+            personaId,
+            applyToAllUsers: !selectedUser,
+          }),
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || "변경 실패");
