@@ -12,9 +12,16 @@ import {
 } from "@discordjs/voice";
 import youtubedl, { type Payload } from "youtube-dl-exec";
 import ffmpegStatic from "ffmpeg-static";
-import { EmbedBuilder } from "discord.js";
+import {
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  EmbedBuilder,
+  type ButtonInteraction,
+} from "discord.js";
 import { songMap } from "./songmap.ts";
 import { getBotSetting, setBotSetting } from "./settings.ts";
+import { getGuildAudioPlayer } from "./audioPlayer.ts";
 
 // prism-media 및 @discordjs/voice 가 내부적으로 ffmpeg-static 바이너리를 사용하도록 보장
 const staticPath =
@@ -63,8 +70,11 @@ export interface PlayMusicResult {
   track?: MusicTrackInfo;
   queued?: boolean;
   queuePosition?: number;
+  playlistCount?: number;
   errorMessage?: string;
 }
+
+export type MusicLoopMode = "off" | "track" | "queue";
 
 // 기본 음악 볼륨 (기존 100%는 너무 크므로 편안한 20%로 기본 조정)
 export const DEFAULT_MUSIC_VOLUME_PERCENT = 20;
@@ -141,6 +151,21 @@ export const initGuildMusicVolume = async (guildId: string): Promise<number> => 
 const activeGuildMusicSessions = new Map<string, GuildMusicSession>();
 // 길드별 재생 대기열(Queue)
 const guildMusicQueues = new Map<string, QueuedMusicItem[]>();
+// 길드별 반복 재생 모드 (off: 끔, track: 한 곡 반복, queue: 전체 대기열 반복)
+const guildLoopModes = new Map<string, MusicLoopMode>();
+
+export const getGuildLoopMode = (guildId?: string): MusicLoopMode => {
+  if (!guildId) return "off";
+  return guildLoopModes.get(guildId) ?? "off";
+};
+
+export const cycleGuildLoopMode = (guildId: string): MusicLoopMode => {
+  const current = getGuildLoopMode(guildId);
+  const next: MusicLoopMode =
+    current === "off" ? "track" : current === "track" ? "queue" : "off";
+  guildLoopModes.set(guildId, next);
+  return next;
+};
 // 길드별 플레이어 바인딩 및 자동 다음 곡 전환 중복 방지용 Set
 const guildPlayerBindings = new Map<
   string,
@@ -170,58 +195,101 @@ export const formatDuration = (seconds?: number): string => {
   return `${mins}:${String(secs).padStart(2, "0")}`;
 };
 
+const mapRawEntryToYouTubeTrack = (
+  entry: any,
+  fallbackQuery: string,
+): YouTubeTrackInfo | null => {
+  if (!entry) return null;
+  const title = typeof entry.title === "string" ? entry.title : fallbackQuery;
+  if (title === "[Private video]" || title === "[Deleted video]") {
+    return null;
+  }
+
+  const rawUrl: string | undefined =
+    entry.webpage_url ||
+    (typeof entry.url === "string" && entry.url.startsWith("http")
+      ? entry.url
+      : entry.id
+        ? `https://www.youtube.com/watch?v=${entry.id}`
+        : undefined);
+
+  if (!rawUrl) return null;
+
+  const duration = typeof entry.duration === "number" ? entry.duration : 0;
+  const thumbnail =
+    entry.thumbnail ||
+    (Array.isArray(entry.thumbnails) && entry.thumbnails.length > 0
+      ? entry.thumbnails[entry.thumbnails.length - 1]?.url
+      : undefined);
+
+  return {
+    title,
+    url: rawUrl,
+    duration,
+    formattedDuration: formatDuration(duration),
+    thumbnail,
+    uploader: entry.uploader || entry.channel || "YouTube",
+    query: fallbackQuery,
+    isLocal: false,
+  };
+};
+
 /**
- * 유튜브 URL 또는 검색어로 트랙 메타데이터 검색
+ * 유튜브 URL(단일 곡 또는 플레이리스트) 또는 검색어로 트랙 목록 탐색
+ */
+export const searchYouTubeTracks = async (
+  query: string,
+): Promise<YouTubeTrackInfo[]> => {
+  const trimmed = query.trim();
+  if (!trimmed) return [];
+
+  const isUrl = /^https?:\/\/(www\.|music\.)?(youtube\.com|youtu\.be)\//i.test(trimmed);
+  const isPlaylistUrl = isUrl && (/[?&]list=/.test(trimmed) || /\/playlist\b/.test(trimmed));
+  const target = isUrl ? trimmed : `ytsearch1:${trimmed}`;
+
+  try {
+    const rawResult: any = await (youtubedl as any)(
+      target,
+      isPlaylistUrl
+        ? {
+            dumpSingleJson: true,
+            flatPlaylist: true,
+            playlistEnd: 50,
+            noWarnings: true,
+          }
+        : {
+            dumpSingleJson: true,
+            noWarnings: true,
+            preferFreeFormats: true,
+            defaultSearch: "ytsearch1",
+          },
+    );
+
+    if (Array.isArray(rawResult?.entries) && rawResult.entries.length > 0) {
+      const tracks = rawResult.entries
+        .map((entry: any) => mapRawEntryToYouTubeTrack(entry, trimmed))
+        .filter((t: YouTubeTrackInfo | null): t is YouTubeTrackInfo => Boolean(t));
+      if (tracks.length > 0) {
+        return tracks;
+      }
+    }
+
+    const single = mapRawEntryToYouTubeTrack(rawResult as Payload, trimmed);
+    return single ? [single] : [];
+  } catch (error: any) {
+    console.error("[YouTubeMusic] 검색 실패:", error?.message || error);
+    return [];
+  }
+};
+
+/**
+ * 유튜브 URL 또는 검색어로 단일 트랙 메타데이터 검색
  */
 export const searchYouTubeTrack = async (
   query: string,
 ): Promise<YouTubeTrackInfo | null> => {
-  const trimmed = query.trim();
-  if (!trimmed) return null;
-
-  const isUrl = /^https?:\/\/(www\.)?(youtube\.com|youtu\.be)\//i.test(trimmed);
-  const target = isUrl ? trimmed : `ytsearch1:${trimmed}`;
-
-  try {
-    const rawResult: any = await (youtubedl as any)(target, {
-      dumpSingleJson: true,
-      noWarnings: true,
-      preferFreeFormats: true,
-      defaultSearch: "ytsearch1",
-    });
-
-    const entry: Payload =
-      rawResult?.entries && rawResult.entries.length > 0
-        ? rawResult.entries[0]
-        : rawResult;
-
-    if (!entry || !entry.webpage_url) {
-      return null;
-    }
-
-    const duration = typeof entry.duration === "number" ? entry.duration : 0;
-    const thumbnail =
-      entry.thumbnail ||
-      (Array.isArray(entry.thumbnails) && entry.thumbnails.length > 0
-        ? entry.thumbnails[entry.thumbnails.length - 1]?.url
-        : undefined);
-
-    const trackInfo: YouTubeTrackInfo = {
-      title: entry.title || trimmed,
-      url: entry.webpage_url,
-      duration,
-      formattedDuration: formatDuration(duration),
-      thumbnail,
-      uploader: entry.uploader || entry.channel || "YouTube",
-      query: trimmed,
-      isLocal: false,
-    };
-
-    return trackInfo;
-  } catch (error: any) {
-    console.error("[YouTubeMusic] 검색 실패:", error?.message || error);
-    return null;
-  }
+  const tracks = await searchYouTubeTracks(query);
+  return tracks[0] ?? null;
 };
 
 /**
@@ -243,6 +311,7 @@ export const stopGuildMusic = (
   activeGuildMusicSessions.delete(guildId);
   if (options?.clearQueue !== false) {
     guildMusicQueues.delete(guildId);
+    guildLoopModes.delete(guildId);
   }
 };
 
@@ -470,10 +539,41 @@ const ensureGuildMusicIdleHandler = (
     }
     activeGuildMusicSessions.delete(guildId);
 
-    const queue = guildMusicQueues.get(guildId);
-    if (queue && queue.length > 0) {
+    const loopMode = getGuildLoopMode(guildId);
+    const binding = guildPlayerBindings.get(guildId);
+    const targetPlayer = binding?.player || player;
+    const targetConnection = binding?.connection || connection;
+
+    // 한 곡 반복 모드면 방금 끝난 곡을 즉시 다시 재생
+    if (loopMode === "track") {
+      console.log(`[Music:${guildId}] 🔂 한 곡 반복 재생: ${finishedSession.track.title}`);
+      try {
+        startResolvedTrack({
+          guildId,
+          track: finishedSession.track,
+          player: targetPlayer,
+          connection: targetConnection,
+          requesterName: finishedSession.requesterName,
+        });
+      } catch (err) {
+        console.error(`[Music:${guildId}] 한 곡 반복 재생 실패:`, err);
+      }
+      return;
+    }
+
+    const queue = guildMusicQueues.get(guildId) || [];
+    // 전체 대기열 반복 모드면 방금 끝난 곡을 대기열 맨 뒤에 다시 추가
+    if (loopMode === "queue") {
+      queue.push({
+        track: finishedSession.track,
+        requesterName: finishedSession.requesterName,
+        addedAt: new Date(),
+      });
+      guildMusicQueues.set(guildId, queue);
+    }
+
+    if (queue.length > 0) {
       const nextItem = queue.shift()!;
-      const binding = guildPlayerBindings.get(guildId);
       console.log(
         `[Music:${guildId}] ⏭️ 대기열 다음 곡 자동 재생: ${nextItem.track.title} (남은 대기열: ${queue.length}곡)`,
       );
@@ -481,8 +581,8 @@ const ensureGuildMusicIdleHandler = (
         startResolvedTrack({
           guildId,
           track: nextItem.track,
-          player: binding?.player || player,
-          connection: binding?.connection || connection,
+          player: targetPlayer,
+          connection: targetConnection,
           requesterName: nextItem.requesterName,
         });
       } catch (err) {
@@ -492,7 +592,6 @@ const ensureGuildMusicIdleHandler = (
     }
 
     console.log(`[Music:${guildId}] ✅ 모든 대기열 음악 재생 완료`);
-    const binding = guildPlayerBindings.get(guildId);
     binding?.onQueueEnd?.();
   });
 };
@@ -578,12 +677,15 @@ export const playMusicTrack = async (params: {
 
   ensureGuildMusicIdleHandler(guildId, player, connection, onQueueEnd);
 
-  // 1. 로컬 음원 우선 탐색, 없으면 유튜브 검색
-  let resolvedTrack: MusicTrackInfo | null = findLocalSong(trimmed);
-  if (!resolvedTrack) {
+  // 1. 로컬 음원 우선 탐색, 없으면 유튜브(단일 곡 또는 플레이리스트) 검색
+  let resolvedTracks: MusicTrackInfo[] = [];
+  const localTrack = findLocalSong(trimmed);
+  if (localTrack) {
+    resolvedTracks = [localTrack];
+  } else {
     try {
-      resolvedTrack = await searchYouTubeTrack(trimmed);
-      if (!resolvedTrack) {
+      resolvedTracks = await searchYouTubeTracks(trimmed);
+      if (resolvedTracks.length === 0) {
         return {
           success: false,
           errorMessage: `\`${trimmed}\`에 해당하는 유튜브 영상을 찾을 수 없습니다.`,
@@ -598,43 +700,65 @@ export const playMusicTrack = async (params: {
     }
   }
 
+  const firstTrack = resolvedTracks[0]!;
+  const extraTracks = resolvedTracks.slice(1);
+
+  const enqueueTracks = (tracksToQueue: MusicTrackInfo[]): number => {
+    const queue = guildMusicQueues.get(guildId) || [];
+    for (const t of tracksToQueue) {
+      queue.push({
+        track: t,
+        requesterName,
+        addedAt: new Date(),
+      });
+    }
+    guildMusicQueues.set(guildId, queue);
+    return queue.length;
+  };
+
   // 2. 이미 해당 길드에서 노래가 재생 중이면 대기열(Queue)에 추가
   const isAlreadyPlayingMusic =
     activeGuildMusicSessions.has(guildId) &&
     player.state.status !== AudioPlayerStatus.Idle;
 
   if (isAlreadyPlayingMusic && !forceImmediate) {
-    const queue = guildMusicQueues.get(guildId) || [];
-    queue.push({
-      track: resolvedTrack,
-      requesterName,
-      addedAt: new Date(),
-    });
-    guildMusicQueues.set(guildId, queue);
+    const firstQueuePos = enqueueTracks([firstTrack]);
+    if (extraTracks.length > 0) {
+      enqueueTracks(extraTracks);
+    }
     console.log(
-      `[Music:${guildId}] 📜 대기열 #${queue.length}번 추가: ${resolvedTrack.title}`,
+      `[Music:${guildId}] 📜 대기열 #${firstQueuePos}번 추가: ${firstTrack.title}` +
+        (extraTracks.length > 0 ? ` 외 ${extraTracks.length}곡` : ""),
     );
     return {
       success: true,
-      track: resolvedTrack,
+      track: firstTrack,
       queued: true,
-      queuePosition: queue.length,
+      queuePosition: firstQueuePos,
+      ...(resolvedTracks.length > 1 ? { playlistCount: resolvedTracks.length } : {}),
     };
   }
 
-  // 3. 즉시 재생 시작
+  // 3. 첫 곡 즉시 재생 시작 + 플레이리스트 나머지 곡은 모두 대기열(Queue)에 추가
   try {
     startResolvedTrack({
       guildId,
-      track: resolvedTrack,
+      track: firstTrack,
       player,
       connection,
       requesterName,
     });
+    if (extraTracks.length > 0) {
+      enqueueTracks(extraTracks);
+      console.log(
+        `[Music:${guildId}] 📜 플레이리스트 나머지 ${extraTracks.length}곡 대기열 추가 완료`,
+      );
+    }
     return {
       success: true,
-      track: resolvedTrack,
+      track: firstTrack,
       queued: false,
+      ...(resolvedTracks.length > 1 ? { playlistCount: resolvedTracks.length } : {}),
     };
   } catch (err: any) {
     console.error("[Music] 음악 재생 시작 실패:", err);
@@ -652,10 +776,11 @@ export const createMusicTrackEmbed = (
   track: MusicTrackInfo,
   requesterName?: string,
   guildId?: string,
-  options?: { queued?: boolean; queuePosition?: number },
+  options?: { queued?: boolean; queuePosition?: number; playlistCount?: number },
 ): EmbedBuilder => {
   const volume = getGuildMusicVolumePercent(guildId);
   const isQueued = options?.queued === true;
+  const playlistCount = options?.playlistCount;
   const titlePrefix = isQueued
     ? `📜 대기열 #${options?.queuePosition ?? 1}번 추가: `
     : "🎵 ";
@@ -684,9 +809,13 @@ export const createMusicTrackEmbed = (
     .setTitle(`${titlePrefix}${track.title}`)
     .setURL(track.url)
     .setDescription(
-      isQueued
-        ? "현재 재생 중인 곡이 끝나면 자동으로 이어서 재생됩니다!"
-        : "유튜브에서 음원을 찾아 재생을 시작합니다!",
+      playlistCount && playlistCount > 1
+        ? isQueued
+          ? `📜 플레이리스트 **${playlistCount}곡**이 대기열에 순서대로 추가되었습니다!`
+          : `📜 플레이리스트 **${playlistCount}곡** 중 첫 곡을 재생하고 나머지 **${playlistCount - 1}곡**을 대기열에 추가했습니다!`
+        : isQueued
+          ? "현재 재생 중인 곡이 끝나면 자동으로 이어서 재생됩니다!"
+          : "유튜브에서 음원을 찾아 재생을 시작합니다!",
     )
     .addFields(
       { name: "채널 / 아티스트", value: track.uploader || "YouTube", inline: true },
@@ -702,4 +831,179 @@ export const createMusicTrackEmbed = (
   }
 
   return embed;
+};
+
+const LOOP_MODE_LABELS: Record<MusicLoopMode, string> = {
+  off: "끔",
+  track: "한 곡 반복",
+  queue: "전체 반복",
+};
+
+/**
+ * 현재 재생 트랙 일시정지/재개, 스킵, 반복 재생, 정지, 대기열 조회 버튼을 포함한 컨트롤 패널 임베드 생성
+ */
+export const createMusicControlPanel = (
+  guildId: string,
+  player?: AudioPlayer,
+  options?: { stopped?: boolean },
+): {
+  embeds: EmbedBuilder[];
+  components: ActionRowBuilder<ButtonBuilder>[];
+} => {
+  const targetPlayer = player ?? getGuildAudioPlayer(guildId);
+  const session = activeGuildMusicSessions.get(guildId);
+  const queue = guildMusicQueues.get(guildId) || [];
+  const loopMode = getGuildLoopMode(guildId);
+  const volume = getGuildMusicVolumePercent(guildId);
+
+  const isStopped = options?.stopped === true || !session;
+  const isPaused =
+    targetPlayer.state.status === AudioPlayerStatus.Paused ||
+    targetPlayer.state.status === AudioPlayerStatus.AutoPaused;
+
+  const statusText = isStopped
+    ? "⏹️ 정지됨"
+    : isPaused
+      ? "⏸️ 일시정지"
+      : "▶️ 재생 중";
+
+  const nextTrackText =
+    queue.length > 0 ? `${queue[0]!.track.title} (외 ${Math.max(0, queue.length - 1)}곡)` : "없음";
+
+  const embed = new EmbedBuilder()
+    .setColor(isStopped ? 0x64748b : isPaused ? 0xfbbf24 : 0x34d399)
+    .setTitle("🎛️ 설아 뮤직 컨트롤러")
+    .setDescription(
+      session
+        ? `**현재 트랙:** ${session.track.title}`
+        : "현재 재생 중인 트랙이 없습니다.",
+    )
+    .addFields(
+      { name: "상태", value: statusText, inline: true },
+      { name: "반복 재생", value: `🔁 ${LOOP_MODE_LABELS[loopMode]}`, inline: true },
+      { name: "볼륨", value: `🔊 ${volume}%`, inline: true },
+      { name: "다음 곡", value: nextTrackText, inline: false },
+    )
+    .setFooter({ text: "아래 버튼을 눌러 음악을 실시간으로 제어할 수 있습니다." })
+    .setTimestamp();
+
+  const loopLabel =
+    loopMode === "off"
+      ? "🔁 반복: 끔"
+      : loopMode === "track"
+        ? "🔂 한곡 반복"
+        : "🔁 전체 반복";
+
+  const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder()
+      .setCustomId("music_toggle_pause")
+      .setLabel(isPaused ? "▶️ 재개" : "⏸️ 일시정지")
+      .setStyle(isPaused ? ButtonStyle.Success : ButtonStyle.Secondary)
+      .setDisabled(isStopped),
+    new ButtonBuilder()
+      .setCustomId("music_skip")
+      .setLabel("⏭️ 스킵")
+      .setStyle(ButtonStyle.Primary)
+      .setDisabled(isStopped),
+    new ButtonBuilder()
+      .setCustomId("music_loop")
+      .setLabel(loopLabel)
+      .setStyle(loopMode === "off" ? ButtonStyle.Secondary : ButtonStyle.Success)
+      .setDisabled(isStopped),
+    new ButtonBuilder()
+      .setCustomId("music_stop")
+      .setLabel("⏹️ 정지")
+      .setStyle(ButtonStyle.Danger)
+      .setDisabled(isStopped),
+    new ButtonBuilder()
+      .setCustomId("music_queue")
+      .setLabel(`📜 대기열 (${queue.length})`)
+      .setStyle(ButtonStyle.Secondary),
+  );
+
+  return {
+    embeds: [embed],
+    components: [row],
+  };
+};
+
+/**
+ * 뮤직 컨트롤러 버튼 인터랙션 처리 핸들러
+ */
+export const handleMusicControlButton = async (
+  interaction: ButtonInteraction,
+  onPlaybackEnded?: (guildId: string) => void,
+): Promise<void> => {
+  const guildId = interaction.guildId;
+  if (!guildId) {
+    await interaction.reply({ content: "서버 채널에서만 사용할 수 있습니다.", ephemeral: true });
+    return;
+  }
+
+  const player = getGuildAudioPlayer(guildId);
+  const { customId } = interaction;
+
+  if (customId === "music_queue") {
+    const current = getGuildCurrentTrack(guildId);
+    const queue = getGuildMusicQueue(guildId);
+    const lines: string[] = [];
+    if (current) {
+      lines.push(`**🎶 현재 재생 중:** ${current.track.title}`);
+    }
+    if (queue.length > 0) {
+      lines.push(
+        `\n**📜 대기열 (${queue.length}곡):**\n` +
+          queue
+            .slice(0, 15)
+            .map((item, idx) => `${idx + 1}. ${item.track.title}`)
+            .join("\n") +
+          (queue.length > 15 ? `\n...외 ${queue.length - 15}곡` : ""),
+      );
+    } else {
+      lines.push("\n대기열이 비어 있습니다.");
+    }
+    await interaction.reply({ content: lines.join("\n"), ephemeral: true });
+    return;
+  }
+
+  if (customId === "music_toggle_pause") {
+    if (!activeGuildMusicSessions.has(guildId)) {
+      await interaction.update(createMusicControlPanel(guildId, player, { stopped: true }));
+      return;
+    }
+    const isPaused =
+      player.state.status === AudioPlayerStatus.Paused ||
+      player.state.status === AudioPlayerStatus.AutoPaused;
+    if (isPaused) {
+      player.unpause();
+    } else {
+      player.pause(true);
+    }
+    await interaction.update(createMusicControlPanel(guildId, player));
+    return;
+  }
+
+  if (customId === "music_loop") {
+    cycleGuildLoopMode(guildId);
+    await interaction.update(createMusicControlPanel(guildId, player));
+    return;
+  }
+
+  if (customId === "music_skip") {
+    const skipResult = await skipGuildMusic(guildId, player);
+    if (!skipResult.nextTrack) {
+      onPlaybackEnded?.(guildId);
+    }
+    await interaction.update(
+      createMusicControlPanel(guildId, player, { stopped: !skipResult.nextTrack }),
+    );
+    return;
+  }
+
+  if (customId === "music_stop") {
+    stopGuildMusic(guildId);
+    player.stop();
+    onPlaybackEnded?.(guildId);
+    await interaction.update(createMusicControlPanel(guildId, player, { stopped: true }));
+  }
 };

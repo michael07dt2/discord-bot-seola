@@ -33,6 +33,7 @@ import {
   stopGuildMusic,
   getGuildCurrentTrack,
   createMusicTrackEmbed,
+  createMusicControlPanel,
   getGuildMusicVolumePercent,
   setGuildMusicVolume,
   getGuildMusicQueue,
@@ -681,18 +682,20 @@ export const handlePrefixCommand = async (
       }
 
       const track = result.track;
+      const guildAudioPlayer = getGuildAudioPlayer(voiceChannel.guild.id);
       const embed = createMusicTrackEmbed(
         track,
         message.member?.displayName || message.author.username,
         voiceChannel.guild.id,
-        result.queued
-          ? {
-              queued: true,
-              ...(result.queuePosition !== undefined
-                ? { queuePosition: result.queuePosition }
-                : {}),
-            }
-          : undefined,
+        {
+          ...(result.queued ? { queued: true } : {}),
+          ...(result.queuePosition !== undefined
+            ? { queuePosition: result.queuePosition }
+            : {}),
+          ...(result.playlistCount !== undefined
+            ? { playlistCount: result.playlistCount }
+            : {}),
+        },
       );
       await appendConversationContext(
         getUserKey(message),
@@ -702,6 +705,11 @@ export const handlePrefixCommand = async (
           : `🎶 ${track.title} 음악 재생을 시작했습니다.`,
       );
       await loadingMsg.edit({ content: null, embeds: [embed] });
+      if (message.channel.isSendable()) {
+        await message.channel
+          .send(createMusicControlPanel(voiceChannel.guild.id, guildAudioPlayer))
+          .catch(() => {});
+      }
       return;
     } catch (error: any) {
       console.error("오디오 리소스 생성 실패:", error);

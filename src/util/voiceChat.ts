@@ -36,6 +36,7 @@ import {
   playMusicTrack,
   stopGuildMusic,
   createMusicTrackEmbed,
+  createMusicControlPanel,
   getGuildMusicVolumePercent,
   setGuildMusicVolume,
   skipGuildMusic,
@@ -2127,16 +2128,20 @@ export const setupVoiceChatListener = (params: {
                   playResult.track,
                   userName,
                   guildId,
-                  playResult.queued
-                    ? {
-                        queued: true,
-                        ...(playResult.queuePosition !== undefined
-                          ? { queuePosition: playResult.queuePosition }
-                          : {}),
-                      }
-                    : undefined,
+                  {
+                    ...(playResult.queued ? { queued: true } : {}),
+                    ...(playResult.queuePosition !== undefined
+                      ? { queuePosition: playResult.queuePosition }
+                      : {}),
+                    ...(playResult.playlistCount !== undefined
+                      ? { playlistCount: playResult.playlistCount }
+                      : {}),
+                  },
                 );
                 session.textChannel.send({ embeds: [embed] }).catch(() => {});
+                session.textChannel
+                  .send(createMusicControlPanel(guildId, player))
+                  .catch(() => {});
               }
 
               await recordVoiceTranscript({

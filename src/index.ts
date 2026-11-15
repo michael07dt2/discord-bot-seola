@@ -15,12 +15,14 @@ import {
   leaveAllVoiceChannels,
   preloadWhisperModel,
   restoreVoiceSessionsIfRecent,
+  setGuildPlaybackMode,
 } from "./util/voiceChat.ts";
 import {
   getCurrentDefaultPersona,
   initPersonaFromDb,
 } from "./util/persona.ts";
 import {
+  notifyDashboardStatusChanged,
   registerDashboardRoutes,
   type DashboardStatusSnapshot,
 } from "./util/dashboard.ts";
@@ -28,6 +30,7 @@ import {
   getGuildCurrentTrack,
   getGuildMusicQueue,
   getGuildMusicVolumePercent,
+  handleMusicControlButton,
 } from "./util/youtubeMusic.ts";
 import {
   checkAndAcquireProcessLock,
@@ -120,8 +123,21 @@ discordClient.once(Events.ClientReady, async (readyClient) => {
   });
 });
 
-// 슬래시(/) 명령어 인터랙션 디스패치
+// 슬래시(/) 명령어 및 버튼 인터랙션 디스패치
 discordClient.on(Events.InteractionCreate, async (interaction) => {
+  if (interaction.isButton() && interaction.customId.startsWith("music_")) {
+    try {
+      await handleMusicControlButton(interaction, (guildId) => {
+        setGuildPlaybackMode(guildId, "idle");
+        notifyDashboardStatusChanged(getDashboardStatusSnapshot());
+      });
+      notifyDashboardStatusChanged(getDashboardStatusSnapshot());
+    } catch (err) {
+      console.error("[Interaction] 뮤직 컨트롤 버튼 처리 실패:", err);
+    }
+    return;
+  }
+
   if (!interaction.isChatInputCommand()) return;
   console.log(
     `[Interaction] ⚡ 슬래시 명령어 수신: /${interaction.commandName} (유저: ${interaction.user.tag})`,

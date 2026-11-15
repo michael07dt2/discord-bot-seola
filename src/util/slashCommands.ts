@@ -31,6 +31,7 @@ import {
   stopGuildMusic,
   getGuildCurrentTrack,
   createMusicTrackEmbed,
+  createMusicControlPanel,
   getGuildMusicVolumePercent,
   setGuildMusicVolume,
   getGuildMusicQueue,
@@ -1235,14 +1236,15 @@ export const handleSlashCommand = async (
             track,
             userName,
             voiceChannel.guild.id,
-            playResult.queued
-              ? {
-                  queued: true,
-                  ...(playResult.queuePosition !== undefined
-                    ? { queuePosition: playResult.queuePosition }
-                    : {}),
-                }
-              : undefined,
+            {
+              ...(playResult.queued ? { queued: true } : {}),
+              ...(playResult.queuePosition !== undefined
+                ? { queuePosition: playResult.queuePosition }
+                : {}),
+              ...(playResult.playlistCount !== undefined
+                ? { playlistCount: playResult.playlistCount }
+                : {}),
+            },
           );
           await appendConversationContext(
             userName,
@@ -1252,6 +1254,9 @@ export const handleSlashCommand = async (
               : `🎶 ${track.title} 음악 재생을 시작했습니다.`,
           );
           await interaction.editReply({ embeds: [embed] });
+          await interaction.followUp(
+            createMusicControlPanel(voiceChannel.guild.id, guildPlayer),
+          );
         } catch (e: any) {
           console.error("음악 재생 연결 실패:", e);
           setGuildPlaybackMode(voiceChannel.guild.id, "idle");
