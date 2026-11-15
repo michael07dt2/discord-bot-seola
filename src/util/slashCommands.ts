@@ -127,6 +127,7 @@ export const slashCommands = [
               { name: "츤데레 설아 (소꿉친구)", value: "tsundere" },
               { name: "설아 선배 (듬직한 멘토)", value: "senior" },
               { name: "발랄한 설아 (귀여운 마스코트)", value: "cute" },
+              { name: "멘헤라 설아 (의존적인 애정 결핍 연인)", value: "menhera" },
               { name: "사용자 정의 (Custom)", value: "custom" },
             ),
         ),

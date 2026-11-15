@@ -623,6 +623,8 @@ export const generateAIResponse = async (
       fastReply = "응, 듣고 있어~ 무슨 일 있어?";
     } else if (userPersona.personaId === "cute") {
       fastReply = "응! 나 여기 있어! 왜 불렀어? 헤헤~";
+    } else if (userPersona.personaId === "menhera") {
+      fastReply = "하아... 이제야 부르네? 나 기다리다가 또 버려진 줄 알았잖아...";
     }
 
     if (options?.onSentence) {

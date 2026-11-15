@@ -228,11 +228,12 @@ export const handlePrefixCommand = async (
     else if (["츤데레", "소꿉친구", "tsundere"].includes(target)) matchedId = "tsundere";
     else if (["선배", "멘토", "senior"].includes(target)) matchedId = "senior";
     else if (["귀여운", "발랄", "cute"].includes(target)) matchedId = "cute";
+    else if (["멘헤라", "애정결핍", "집착", "menhera"].includes(target)) matchedId = "menhera";
     else if (["커스텀", "custom"].includes(target)) matchedId = "custom";
 
     if (!matchedId) {
       await message.reply(
-        `❌ \`${rawArgs}\` 페르소나를 찾을 수 없습니다.\n지원 페르소나: \`girlfriend\`(여자친구), \`assistant\`(비서), \`tsundere\`(츤데레), \`senior\`(선배), \`cute\`(발랄), \`custom\`(커스텀)`,
+        `❌ \`${rawArgs}\` 페르소나를 찾을 수 없습니다.\n지원 페르소나: \`girlfriend\`(여자친구), \`assistant\`(비서), \`tsundere\`(츤데레), \`senior\`(선배), \`cute\`(발랄), \`menhera\`(멘헤라), \`custom\`(커스텀)`,
       );
       return;
     }
