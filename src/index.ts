@@ -169,5 +169,71 @@ process.on("SIGINT", () => handleGracefulShutdown("SIGINT"));
 process.on("SIGTERM", () => handleGracefulShutdown("SIGTERM"));
 process.on("SIGHUP", () => handleGracefulShutdown("SIGHUP"));
 
-// 5. 디스코드 로그인
-discordClient.login(CONFIG.DISCORD_TOKEN);
+// 일시적 네트워크/DNS/소켓 단절 에러 여부 판별 (프로세스 크래시 방지용)
+const TRANSIENT_NETWORK_ERROR_CODES = new Set([
+  "ENOTFOUND",
+  "EAI_AGAIN",
+  "ECONNRESET",
+  "ECONNREFUSED",
+  "ETIMEDOUT",
+  "EHOSTUNREACH",
+  "ENETUNREACH",
+  "EPIPE",
+  "ERR_SOCKET_CLOSED",
+  "UND_ERR_CONNECT_TIMEOUT",
+]);
+
+const isTransientNetworkError = (err: unknown): boolean => {
+  if (!err || typeof err !== "object") return false;
+  const record = err as { code?: unknown; cause?: unknown };
+  if (typeof record.code === "string" && TRANSIENT_NETWORK_ERROR_CODES.has(record.code)) {
+    return true;
+  }
+  return record.cause ? isTransientNetworkError(record.cause) : false;
+};
+
+// Discord 클라이언트/샤드 에러 이벤트가 미처리 예외로 프로세스를 종료시키지 않도록 방어
+discordClient.on(Events.Error, (err) => {
+  console.error("[Discord] 클라이언트 오류 발생:", err);
+});
+
+discordClient.on(Events.ShardError, (err, shardId) => {
+  console.error(`[Discord] 샤드(${shardId}) 연결 오류 발생:`, err);
+});
+
+// 전역 비동기 예외 방어: 네트워크 일시 단절 등으로 봇 전체가 죽지 않도록 유지
+process.on("unhandledRejection", (reason) => {
+  console.error("[Process] 처리되지 않은 Promise 거부(unhandledRejection):", reason);
+});
+
+process.on("uncaughtException", (err) => {
+  if (isTransientNetworkError(err)) {
+    console.warn("[Process] 일시적 네트워크/DNS 오류 감지 — 프로세스 유지:", err.message);
+    return;
+  }
+  console.error("[Process] 치명적 미처리 예외(uncaughtException) 발생:", err);
+  handleGracefulShutdown("uncaughtException").catch(() => {
+    releaseProcessLock();
+    process.exit(1);
+  });
+});
+
+// 5. 디스코드 로그인 (네트워크/DNS 단절 시 지수 백오프로 자동 재시도)
+const loginWithRetry = async (attempt = 1): Promise<void> => {
+  if (isShuttingDown) return;
+  try {
+    await discordClient.login(CONFIG.DISCORD_TOKEN);
+  } catch (err) {
+    if (isShuttingDown) return;
+    const delayMs = Math.min(5_000 * Math.pow(2, attempt - 1), 60_000);
+    console.error(
+      `[Discord] 로그인 실패 (시도 #${attempt}) — ${Math.round(delayMs / 1000)}초 후 재시도:`,
+      err instanceof Error ? err.message : err,
+    );
+    setTimeout(() => {
+      void loginWithRetry(attempt + 1);
+    }, delayMs);
+  }
+};
+
+void loginWithRetry();
