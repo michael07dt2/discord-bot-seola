@@ -21,7 +21,11 @@ import {
   registerDashboardRoutes,
   type DashboardStatusSnapshot,
 } from "./util/dashboard.ts";
-import { getGuildMusicVolumePercent } from "./util/youtubeMusic.ts";
+import {
+  getGuildCurrentTrack,
+  getGuildMusicQueue,
+  getGuildMusicVolumePercent,
+} from "./util/youtubeMusic.ts";
 import {
   checkAndAcquireProcessLock,
   releaseProcessLock,
@@ -51,6 +55,26 @@ const discordClient = new Client({
 // 대시보드 및 실시간 상태 동기화를 위한 스냅샷 생성자
 const getDashboardStatusSnapshot = (): DashboardStatusSnapshot => {
   const preset = getCurrentVoicePreset();
+  const sessions = getActiveVoiceSessions();
+  const musicStates = sessions.map((s) => {
+    const current = getGuildCurrentTrack(s.guildId);
+    const queue = getGuildMusicQueue(s.guildId);
+    return {
+      guildId: s.guildId,
+      currentTrack: current
+        ? {
+            title: current.track.title,
+            isLocal: current.track.isLocal,
+            requesterName: current.requesterName,
+          }
+        : null,
+      queue: queue.map((item) => ({
+        title: item.track.title,
+        isLocal: item.track.isLocal,
+        requesterName: item.requesterName,
+      })),
+    };
+  });
   return {
     botTag: discordClient.user?.tag || "Seola Bot",
     uptimeSec: Math.floor(process.uptime()),
@@ -60,7 +84,8 @@ const getDashboardStatusSnapshot = (): DashboardStatusSnapshot => {
       label: preset.label,
     },
     musicVolume: getGuildMusicVolumePercent(),
-    sessions: getActiveVoiceSessions(),
+    sessions,
+    musicStates,
   };
 };
 

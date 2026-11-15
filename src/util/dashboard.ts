@@ -3,6 +3,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import express, { type Express, type Request, type Response } from "express";
 import { desc, eq, sql } from "drizzle-orm";
+import { getVoiceConnection } from "@discordjs/voice";
 import { db, contextsTable, voiceLogsTable } from "../db/index.ts";
 import {
   getUserPersona,
@@ -17,6 +18,7 @@ import {
   setGuildPlaybackMode,
   setVoiceChatEnabled,
   setVoicePreset,
+  speakInVoiceChannel,
   VOICE_PRESETS,
 } from "./voiceChat.ts";
 import { songMap } from "./songmap.ts";
@@ -61,6 +63,20 @@ export interface ActiveVoiceSessionStatus {
   activeSpeakerCount: number;
 }
 
+export interface DashboardMusicState {
+  guildId: string;
+  currentTrack: {
+    title: string;
+    isLocal: boolean;
+    requesterName?: string | undefined;
+  } | null;
+  queue: Array<{
+    title: string;
+    isLocal: boolean;
+    requesterName?: string | undefined;
+  }>;
+}
+
 export interface DashboardStatusSnapshot {
   botTag: string;
   uptimeSec: number;
@@ -71,6 +87,7 @@ export interface DashboardStatusSnapshot {
   };
   musicVolume: number;
   sessions: ActiveVoiceSessionStatus[];
+  musicStates?: DashboardMusicState[];
 }
 
 const MAX_MEMORY_LOGS = 500;
@@ -543,6 +560,32 @@ export const registerDashboardRoutes = (
     });
   });
 
+  // 10-1. 실시간 제어 API: 원격 TTS 말하기
+  app.post("/api/control/speak", async (req: Request, res: Response) => {
+    const { guildId, text } = req.body || {};
+    const trimmedText = typeof text === "string" ? text.trim() : "";
+    if (!guildId || !trimmedText) {
+      res.status(400).json({ error: "guildId와 text가 필요합니다." });
+      return;
+    }
+
+    const connection = getVoiceConnection(guildId);
+    if (!connection) {
+      res.status(400).json({ error: "봇이 해당 서버의 음성 채널에 접속해 있지 않습니다." });
+      return;
+    }
+
+    try {
+      const player = getGuildAudioPlayer(guildId);
+      notifyDashboardStatusChanged(getStatusSnapshot());
+      await speakInVoiceChannel(connection, player, guildId, trimmedText);
+      notifyDashboardStatusChanged(getStatusSnapshot());
+      res.json({ success: true, guildId, text: trimmedText });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || "TTS 발화 중 오류 발생" });
+    }
+  });
+
   // 11. 개인화 장기 기억(RAG) REST API
   app.get("/api/memories", async (req: Request, res: Response) => {
     const userName = String(req.query["user"] || "micha");
@@ -608,12 +651,14 @@ export const registerDashboardRoutes = (
 
     const keepAliveTimer = setInterval(() => {
       try {
-        res.write(": ping\n\n");
+        res.write(
+          `event: status_update\ndata: ${JSON.stringify(getStatusSnapshot())}\n\n`,
+        );
       } catch {
         clearInterval(keepAliveTimer);
         sseClients.delete(res);
       }
-    }, 25000);
+    }, 10000);
 
     req.on("close", () => {
       clearInterval(keepAliveTimer);

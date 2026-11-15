@@ -227,6 +227,59 @@
     .memory-card-header {
       display: flex; justify-content: space-between; font-size: 11px; color: var(--text-muted);
     }
+
+    /* 활성 세션 / 현재 재생 상태 */
+    .session-status-box {
+      display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+      padding: 8px 10px; border-radius: 8px;
+      background: rgba(0, 0, 0, 0.25); border: 1px solid var(--border);
+      font-size: 12px; color: var(--text-secondary);
+    }
+    .status-chip {
+      display: inline-flex; align-items: center; gap: 4px;
+      padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 600;
+    }
+    .status-chip.on { background: rgba(52, 211, 153, 0.15); color: var(--green); }
+    .status-chip.paused { background: rgba(251, 191, 36, 0.15); color: var(--amber); }
+    .status-chip.off { background: rgba(100, 116, 139, 0.2); color: var(--text-muted); }
+    .now-playing-box {
+      background: rgba(0, 0, 0, 0.25); border: 1px solid var(--border);
+      border-radius: 8px; padding: 8px 10px; font-size: 12px;
+      display: flex; flex-direction: column; gap: 6px;
+    }
+    .queue-chips {
+      display: flex; flex-wrap: wrap; gap: 6px;
+    }
+    .queue-chip {
+      background: var(--bg-user); border: 1px solid var(--border);
+      padding: 2px 8px; border-radius: 6px; font-size: 11px; color: var(--text-secondary);
+      max-width: 220px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+
+    /* 토스트 알림 */
+    .toast-container {
+      position: fixed; right: 20px; bottom: 20px; z-index: 999;
+      display: flex; flex-direction: column; gap: 8px; pointer-events: none;
+    }
+    .toast {
+      pointer-events: auto; min-width: 240px; max-width: 380px;
+      padding: 11px 16px; border-radius: 10px; font-size: 13px; font-weight: 500;
+      color: var(--text-primary); background: var(--bg-card);
+      border: 1px solid var(--border); box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+      animation: toastIn 0.2s ease-out;
+    }
+    .toast.success { border-left: 4px solid var(--green); }
+    .toast.error { border-left: 4px solid var(--danger); }
+    .toast.info { border-left: 4px solid var(--accent); }
+    @keyframes toastIn {
+      from { opacity: 0; transform: translateY(10px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    @media (max-width: 768px) {
+      header { flex-direction: column; align-items: flex-start; gap: 10px; }
+      .memory-form { grid-template-columns: 1fr; }
+    }
   </style>
 </head>
 <body>
@@ -301,10 +354,29 @@
         <!-- 음성 채널 제어 -->
         <div class="control-card">
           <label>🎙️ 음성 채널 상태 및 제어</label>
+          <div class="session-status-box" id="sessionStatusBox">
+            <span class="status-chip off">미접속</span>
+            <span>음성 채널에 연결되어 있지 않습니다.</span>
+          </div>
+          <div class="control-row" id="sessionSelectRow" style="display: none;">
+            <select id="sessionSelect"></select>
+          </div>
           <div class="control-row">
-            <button class="btn btn-secondary" id="pauseVoiceBtn">⏸️ 듣기 일시정지</button>
-            <button class="btn btn-secondary" id="resumeVoiceBtn">▶️ 듣기 재개</button>
-            <button class="btn btn-danger" id="leaveVoiceBtn">👋 채널 퇴장</button>
+            <button class="btn btn-secondary" id="pauseVoiceBtn">⏸️ 일시정지</button>
+            <button class="btn btn-secondary" id="resumeVoiceBtn">▶️ 재개</button>
+            <button class="btn btn-danger" id="leaveVoiceBtn">👋 퇴장</button>
+          </div>
+        </div>
+
+        <!-- 원격 TTS 말하기 -->
+        <div class="control-card">
+          <label>🗣️ 원격 TTS 말하기 (/voice speak)</label>
+          <div class="control-row">
+            <input type="text" id="speakInput" placeholder="음성 채널에서 설아가 말할 문장 입력..." />
+            <button class="btn btn-primary" id="speakBtn">말하기</button>
+          </div>
+          <div style="font-size: 11px; color: var(--text-muted);">
+            노래 재생 중이면 자동으로 일시정지 후 말하고 다시 이어서 재생합니다.
           </div>
         </div>
 
@@ -334,7 +406,9 @@
             <span style="font-size: 12px; color: var(--text-secondary); white-space: nowrap;">🔊 음악 볼륨:</span>
             <input type="range" id="volumeSlider" min="0" max="100" value="20" style="flex: 1; accent-color: var(--accent); cursor: pointer;" />
             <span id="volumeVal" style="font-size: 12px; font-weight: 700; color: var(--accent); min-width: 36px;">20%</span>
+            <button class="btn btn-secondary btn-sm" id="clearQueueBtn">대기열 비우기</button>
           </div>
+          <div class="now-playing-box" id="nowPlayingBox" style="display: none;"></div>
         </div>
       </div>
     </div>
@@ -373,11 +447,18 @@
             <span class="search-icon">🔍</span>
             <input type="text" id="searchInput" placeholder="대화 내용, 사용자 이름, 답변 실시간 검색..." />
           </div>
-          <select id="userFilter" style="max-width: 160px;">
+          <select id="userFilter" style="max-width: 150px;">
             <option value="">모든 사용자</option>
           </select>
+          <select id="actionFilter" style="max-width: 130px;">
+            <option value="">모든 유형</option>
+            <option value="chat">음성 대화</option>
+            <option value="music_play">음악 재생</option>
+          </select>
+          <button class="btn btn-secondary" id="sortOrderBtn">⬇️ 최신순</button>
           <button class="btn btn-secondary" id="refreshBtn">🔄 새로고침</button>
-          <button class="btn btn-danger" id="clearAllBtn">🗑️ 전체 비우기</button>
+          <button class="btn btn-secondary" id="clearContextBtn">🧹 문맥 초기화</button>
+          <button class="btn btn-danger" id="clearAllBtn">🗑️ 로그 비우기</button>
         </div>
 
         <div class="logs-container" id="logsContainer">
@@ -392,7 +473,10 @@
           대화 시 벡터 검색을 통해 관련 높은 사실이 프롬프트에 자동 소환됩니다.
         </div>
         <form class="memory-form" id="addMemoryForm">
-          <input type="text" id="memUser" placeholder="사용자 이름" required value="micha" />
+          <div style="display: flex; gap: 6px;">
+            <input type="text" id="memUser" placeholder="사용자 이름" required value="micha" />
+            <button class="btn btn-secondary" type="button" id="searchMemoryBtn" title="해당 유저 기억 조회">🔍</button>
+          </div>
           <input type="text" id="memText" placeholder="기억할 내용 (예: 매운 떡볶이를 좋아함, 생일은 5월 12일)" required />
           <select id="memCategory">
             <option value="preference">취향/선호</option>
@@ -411,13 +495,19 @@
     </div>
   </main>
 
+  <div class="toast-container" id="toastContainer"></div>
+
   <script>
     let allLogs = [];
     let activeSessions = [];
+    let activeMusicStates = [];
+    let sortDescending = true;
 
     const logsContainer = document.getElementById("logsContainer");
     const searchInput = document.getElementById("searchInput");
     const userFilter = document.getElementById("userFilter");
+    const actionFilter = document.getElementById("actionFilter");
+    const sortOrderBtn = document.getElementById("sortOrderBtn");
     const sseDot = document.getElementById("sseDot");
     const sseStatus = document.getElementById("sseStatus");
 
@@ -426,6 +516,27 @@
     const presetVal = document.getElementById("presetVal");
     const sessionsVal = document.getElementById("sessionsVal");
     const botTagPill = document.getElementById("botTagPill");
+    const sessionStatusBox = document.getElementById("sessionStatusBox");
+    const sessionSelectRow = document.getElementById("sessionSelectRow");
+    const sessionSelect = document.getElementById("sessionSelect");
+    const nowPlayingBox = document.getElementById("nowPlayingBox");
+
+    function showToast(message, type = "info") {
+      const container = document.getElementById("toastContainer");
+      const toast = document.createElement("div");
+      toast.className = "toast " + type;
+      toast.textContent = message;
+      container.appendChild(toast);
+      setTimeout(() => {
+        toast.style.opacity = "0";
+        toast.style.transition = "opacity 0.25s ease";
+        setTimeout(() => toast.remove(), 250);
+      }, 3000);
+    }
+
+    function getSelectedGuildId() {
+      return sessionSelect.value || activeSessions[0]?.guildId || "";
+    }
 
     // 1. 초기 데이터 로드
     async function fetchInitialData() {
@@ -458,7 +569,51 @@
         document.getElementById("volumeVal").textContent = v + "%";
       }
       activeSessions = status.sessions || [];
+      activeMusicStates = status.musicStates || [];
       sessionsVal.textContent = activeSessions.length + "개";
+
+      const prevSelectedGuild = sessionSelect.value;
+      if (activeSessions.length > 0) {
+        sessionSelect.innerHTML = activeSessions
+          .map((s) => `<option value="${escapeHtml(s.guildId)}">${escapeHtml(s.guildName)} — #${escapeHtml(s.channelName)}</option>`)
+          .join("");
+        if (prevSelectedGuild && activeSessions.some((s) => s.guildId === prevSelectedGuild)) {
+          sessionSelect.value = prevSelectedGuild;
+        }
+        sessionSelectRow.style.display = activeSessions.length > 1 ? "flex" : "none";
+
+        const selected = activeSessions.find((s) => s.guildId === getSelectedGuildId()) || activeSessions[0];
+        const modeMap = { idle: "💤 대기", tts: "🗣️ 말하는 중", music: "🎵 음악 재생" };
+        sessionStatusBox.innerHTML = `
+          <span class="status-chip ${selected.voiceChatEnabled ? "on" : "paused"}">${selected.voiceChatEnabled ? "🟢 경청 중" : "⏸️ 일시정지"}</span>
+          <span class="status-chip off">${modeMap[selected.playbackMode] || selected.playbackMode}</span>
+          <span><strong>${escapeHtml(selected.guildName)}</strong> (#${escapeHtml(selected.channelName)})</span>
+        `;
+
+        const musicState = activeMusicStates.find((m) => m.guildId === selected.guildId);
+        if (musicState && (musicState.currentTrack || (musicState.queue && musicState.queue.length > 0))) {
+          const trackTitle = musicState.currentTrack ? escapeHtml(musicState.currentTrack.title) : "없음";
+          const queueList = musicState.queue || [];
+          const queueHtml = queueList.length > 0
+            ? `<div class="queue-chips">${queueList.slice(0, 5).map((q, i) => `<span class="queue-chip">${i + 1}. ${escapeHtml(q.title)}</span>`).join("")}${queueList.length > 5 ? `<span class="queue-chip">+${queueList.length - 5}곡</span>` : ""}</div>`
+            : `<span style="color: var(--text-muted);">대기열 비어 있음</span>`;
+          nowPlayingBox.style.display = "flex";
+          nowPlayingBox.innerHTML = `
+            <div>🎵 <strong>재생 중:</strong> ${trackTitle}</div>
+            <div>📜 <strong>대기열 (${queueList.length}곡):</strong></div>
+            ${queueHtml}
+          `;
+        } else {
+          nowPlayingBox.style.display = "none";
+          nowPlayingBox.innerHTML = "";
+        }
+      } else {
+        sessionSelect.innerHTML = "";
+        sessionSelectRow.style.display = "none";
+        sessionStatusBox.innerHTML = '<span class="status-chip off">미접속</span><span>음성 채널에 연결되어 있지 않습니다.</span>';
+        nowPlayingBox.style.display = "none";
+        nowPlayingBox.innerHTML = "";
+      }
     }
 
     function formatUptime(sec) {
@@ -474,9 +629,11 @@
     function renderLogs() {
       const query = (searchInput.value || "").trim().toLowerCase();
       const selectedUser = userFilter.value;
+      const selectedAction = actionFilter.value;
 
       const filtered = allLogs.filter((log) => {
         if (selectedUser && log.userName !== selectedUser) return false;
+        if (selectedAction && log.actionType !== selectedAction) return false;
         if (!query) return true;
         return (
           log.userText.toLowerCase().includes(query) ||
@@ -485,12 +642,14 @@
         );
       });
 
-      if (filtered.length === 0) {
+      const ordered = sortDescending ? [...filtered].reverse() : filtered;
+
+      if (ordered.length === 0) {
         logsContainer.innerHTML = '<div style="text-align: center; color: var(--text-muted); padding: 40px;">대화록이 없습니다.</div>';
         return;
       }
 
-      logsContainer.innerHTML = filtered
+      logsContainer.innerHTML = ordered
         .map((log) => {
           const isMusic = log.actionType === "music_play";
           const dateStr = new Date(log.createdAt).toLocaleTimeString("ko-KR", {
@@ -548,9 +707,10 @@
         if (res.ok) {
           allLogs = allLogs.filter((l) => l.id !== id);
           renderLogs();
+          showToast("대화 기록을 삭제했습니다.", "success");
         }
       } catch (err) {
-        alert("삭제 실패: " + err.message);
+        showToast("삭제 실패: " + err.message, "error");
       }
     };
 
@@ -565,9 +725,10 @@
           body: JSON.stringify({ userName, personaId }),
         });
         const data = await res.json();
-        alert(data.message || "페르소나가 변경되었습니다!");
+        if (!res.ok) throw new Error(data.error || "변경 실패");
+        showToast(data.message || "페르소나가 변경되었습니다!", "success");
       } catch (e) {
-        alert("변경 실패: " + e.message);
+        showToast("변경 실패: " + e.message, "error");
       }
     });
 
@@ -580,40 +741,72 @@
           body: JSON.stringify({ presetId }),
         });
         const data = await res.json();
-        alert(data.message || "목소리 프리셋이 변경되었습니다!");
+        if (!res.ok) throw new Error(data.error || "변경 실패");
+        showToast(data.message || "목소리 프리셋이 변경되었습니다!", "success");
       } catch (e) {
-        alert("변경 실패: " + e.message);
+        showToast("변경 실패: " + e.message, "error");
       }
     });
 
-    document.getElementById("pauseVoiceBtn").addEventListener("click", async () => {
-      const guildId = activeSessions[0]?.guildId;
-      if (!guildId) return alert("현재 음성 채널에 연결되어 있지 않습니다.");
-      await fetch("/api/control/voice-session", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ guildId, action: "pause" }),
-      });
+    async function sendVoiceSessionAction(action, successMsg) {
+      const guildId = getSelectedGuildId();
+      if (!guildId) return showToast("현재 음성 채널에 연결되어 있지 않습니다.", "error");
+      try {
+        const res = await fetch("/api/control/voice-session", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ guildId, action }),
+        });
+        if (!res.ok) throw new Error("요청 실패");
+        showToast(successMsg, "success");
+      } catch (e) {
+        showToast("세션 제어 실패: " + e.message, "error");
+      }
+    }
+
+    document.getElementById("pauseVoiceBtn").addEventListener("click", () => {
+      sendVoiceSessionAction("pause", "음성 듣기를 일시정지했습니다.");
+    });
+    document.getElementById("resumeVoiceBtn").addEventListener("click", () => {
+      sendVoiceSessionAction("resume", "음성 듣기를 재개했습니다.");
+    });
+    document.getElementById("leaveVoiceBtn").addEventListener("click", () => {
+      sendVoiceSessionAction("leave", "음성 채널에서 퇴장했습니다.");
     });
 
-    document.getElementById("resumeVoiceBtn").addEventListener("click", async () => {
-      const guildId = activeSessions[0]?.guildId;
-      if (!guildId) return alert("현재 음성 채널에 연결되어 있지 않습니다.");
-      await fetch("/api/control/voice-session", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ guildId, action: "resume" }),
-      });
-    });
+    async function triggerRemoteSpeak() {
+      const input = document.getElementById("speakInput");
+      const btn = document.getElementById("speakBtn");
+      const text = input.value.trim();
+      const guildId = getSelectedGuildId();
+      if (!guildId) return showToast("먼저 음성 채널에 봇을 입장시켜 주세요.", "error");
+      if (!text) return showToast("말할 문장을 입력해주세요.", "error");
 
-    document.getElementById("leaveVoiceBtn").addEventListener("click", async () => {
-      const guildId = activeSessions[0]?.guildId;
-      if (!guildId) return alert("현재 음성 채널에 연결되어 있지 않습니다.");
-      await fetch("/api/control/voice-session", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ guildId, action: "leave" }),
-      });
+      btn.disabled = true;
+      btn.textContent = "발화 중...";
+      try {
+        const res = await fetch("/api/control/speak", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ guildId, text }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || "발화 실패");
+        input.value = "";
+        showToast("음성 발화를 완료했습니다.", "success");
+      } catch (err) {
+        showToast("발화 실패: " + err.message, "error");
+      } finally {
+        btn.disabled = false;
+        btn.textContent = "말하기";
+      }
+    }
+    document.getElementById("speakBtn").addEventListener("click", triggerRemoteSpeak);
+    document.getElementById("speakInput").addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        triggerRemoteSpeak();
+      }
     });
 
     document.getElementById("playMusicBtn").addEventListener("click", async () => {
@@ -622,11 +815,11 @@
       const songTitle = customInput || selectVal;
 
       if (!songTitle) {
-        return alert("재생할 곡명 또는 유튜브 링크를 입력해주세요!");
+        return showToast("재생할 곡명 또는 유튜브 링크를 입력해주세요!", "error");
       }
 
-      const guildId = activeSessions[0]?.guildId;
-      if (!guildId) return alert("먼저 디스코드 음성 채널에 봇을 입장시켜 주세요!");
+      const guildId = getSelectedGuildId();
+      if (!guildId) return showToast("먼저 디스코드 음성 채널에 봇을 입장시켜 주세요!", "error");
 
       const btn = document.getElementById("playMusicBtn");
       btn.disabled = true;
@@ -640,10 +833,12 @@
         });
         const data = await res.json();
         if (!res.ok) {
-          alert(`재생 실패: ${data.error || "알 수 없는 오류"}`);
+          showToast(`재생 실패: ${data.error || "알 수 없는 오류"}`, "error");
+        } else {
+          showToast(data.queued ? `대기열 #${data.queuePosition}번 추가: ${data.track?.title || songTitle}` : `재생 시작: ${data.track?.title || songTitle}`, "success");
         }
       } catch (err) {
-        alert("음악 재생 요청 중 오류가 발생했습니다.");
+        showToast("음악 재생 요청 중 오류가 발생했습니다.", "error");
       } finally {
         btn.disabled = false;
         btn.textContent = "재생";
@@ -651,23 +846,37 @@
     });
 
     document.getElementById("skipMusicBtn").addEventListener("click", async () => {
-      const guildId = activeSessions[0]?.guildId;
-      if (!guildId) return;
-      await fetch("/api/control/music", {
+      const guildId = getSelectedGuildId();
+      if (!guildId) return showToast("활성 음성 세션이 없습니다.", "error");
+      const res = await fetch("/api/control/music", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ guildId, action: "skip" }),
       });
+      if (res.ok) showToast("다음 곡으로 건너뛰었습니다.", "info");
     });
 
     document.getElementById("stopMusicBtn").addEventListener("click", async () => {
-      const guildId = activeSessions[0]?.guildId;
-      if (!guildId) return;
-      await fetch("/api/control/music", {
+      const guildId = getSelectedGuildId();
+      if (!guildId) return showToast("활성 음성 세션이 없습니다.", "error");
+      const res = await fetch("/api/control/music", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ guildId, action: "stop" }),
       });
+      if (res.ok) showToast("음악 재생을 정지했습니다.", "info");
+    });
+
+    document.getElementById("clearQueueBtn").addEventListener("click", async () => {
+      const guildId = getSelectedGuildId();
+      if (!guildId) return showToast("활성 음성 세션이 없습니다.", "error");
+      const res = await fetch("/api/control/music", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ guildId, action: "clear_queue" }),
+      });
+      const data = await res.json();
+      if (res.ok) showToast(`대기열 ${data.clearedCount || 0}곡을 비웠습니다.`, "info");
     });
 
     const volumeSlider = document.getElementById("volumeSlider");
@@ -677,22 +886,56 @@
     });
     volumeSlider.addEventListener("change", async () => {
       const percent = parseInt(volumeSlider.value, 10);
-      const guildId = activeSessions[0]?.guildId;
-      await fetch("/api/control/music/volume", {
+      const guildId = getSelectedGuildId();
+      const res = await fetch("/api/control/music/volume", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ guildId, percent }),
       });
+      if (res.ok) showToast(`음악 볼륨을 ${percent}%로 설정했습니다.`, "info");
+    });
+
+    document.getElementById("clearContextBtn").addEventListener("click", async () => {
+      const userName = userFilter.value || "micha";
+      if (!confirm(`${userName}님의 대화 문맥(최근 기억)을 초기화할까요?`)) return;
+      try {
+        const res = await fetch("/api/contexts/" + encodeURIComponent(userName), { method: "DELETE" });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || "초기화 실패");
+        showToast(data.message || `${userName}님의 문맥을 초기화했습니다.`, "success");
+      } catch (err) {
+        showToast("문맥 초기화 실패: " + err.message, "error");
+      }
     });
 
     document.getElementById("clearAllBtn").addEventListener("click", async () => {
       if (!confirm("모든 음성 대화록을 삭제하시겠습니까?")) return;
       await fetch("/api/voice-logs", { method: "DELETE" });
+      showToast("모든 대화록을 삭제했습니다.", "info");
+    });
+
+    sortOrderBtn.addEventListener("click", () => {
+      sortDescending = !sortDescending;
+      sortOrderBtn.textContent = sortDescending ? "⬇️ 최신순" : "⬆️ 오래된순";
+      renderLogs();
     });
 
     searchInput.addEventListener("input", renderLogs);
     userFilter.addEventListener("change", renderLogs);
-    document.getElementById("refreshBtn").addEventListener("click", fetchInitialData);
+    actionFilter.addEventListener("change", renderLogs);
+    sessionSelect.addEventListener("change", () => {
+      renderStatus({
+        botTag: botTagPill.textContent.replace(/^🤖\s*/, ""),
+        uptimeSec: 0,
+        memoryMb: parseInt(memoryVal.textContent, 10) || 0,
+        sessions: activeSessions,
+        musicStates: activeMusicStates,
+      });
+    });
+    document.getElementById("refreshBtn").addEventListener("click", async () => {
+      await fetchInitialData();
+      showToast("대시보드를 새로고침했습니다.", "info");
+    });
 
     // 6. 탭 전환
     const tabLogsBtn = document.getElementById("tabLogsBtn");
@@ -746,6 +989,14 @@
       }
     }
 
+    document.getElementById("searchMemoryBtn").addEventListener("click", loadMemories);
+    document.getElementById("memUser").addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        loadMemories();
+      }
+    });
+
     document.getElementById("addMemoryForm").addEventListener("submit", async (e) => {
       e.preventDefault();
       const userName = document.getElementById("memUser").value.trim();
@@ -761,8 +1012,9 @@
         });
         document.getElementById("memText").value = "";
         loadMemories();
+        showToast("새 장기 기억이 저장되었습니다.", "success");
       } catch (err) {
-        alert("기억 저장 실패: " + err.message);
+        showToast("기억 저장 실패: " + err.message, "error");
       }
     });
 
@@ -770,6 +1022,7 @@
       if (!confirm("이 기억을 삭제하시겠습니까?")) return;
       await fetch("/api/memories/" + id, { method: "DELETE" });
       loadMemories();
+      showToast("장기 기억을 삭제했습니다.", "info");
     };
 
     // 8. SSE 실시간 연결
