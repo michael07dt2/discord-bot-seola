@@ -158,6 +158,35 @@ const guildMusicQueues = new Map<string, QueuedMusicItem[]>();
 const guildLoopModes = new Map<string, MusicLoopMode>();
 // 길드별 최하단 뮤직 컨트롤러 메시지 1개 유지용 캐시
 const guildControlMessages = new Map<string, Message>();
+// 길드별 뮤직 컨트롤러 재생 시간 주기적 갱신 타이머
+const guildControlRefreshTimers = new Map<string, NodeJS.Timeout>();
+
+const clearGuildControlRefreshTimer = (guildId: string): void => {
+  const timer = guildControlRefreshTimers.get(guildId);
+  if (timer) {
+    clearInterval(timer);
+    guildControlRefreshTimers.delete(guildId);
+  }
+};
+
+const ensureGuildControlRefreshTimer = (guildId: string): void => {
+  clearGuildControlRefreshTimer(guildId);
+  const timer = setInterval(() => {
+    const session = activeGuildMusicSessions.get(guildId);
+    const msg = guildControlMessages.get(guildId);
+    if (!session || !msg) {
+      clearGuildControlRefreshTimer(guildId);
+      return;
+    }
+    const player = getGuildAudioPlayer(guildId);
+    if (player.state.status !== AudioPlayerStatus.Playing) {
+      return;
+    }
+    refreshGuildMusicControlPanel(guildId);
+  }, 10_000);
+  timer.unref();
+  guildControlRefreshTimers.set(guildId, timer);
+};
 
 export const getGuildLoopMode = (guildId?: string): MusicLoopMode => {
   if (!guildId) return "off";
@@ -193,6 +222,21 @@ export const formatDuration = (seconds?: number): string => {
   const hrs = Math.floor(seconds / 3600);
   const mins = Math.floor((seconds % 3600) / 60);
   const secs = Math.floor(seconds % 60);
+
+  if (hrs > 0) {
+    return `${hrs}:${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
+  }
+  return `${mins}:${String(secs).padStart(2, "0")}`;
+};
+
+/**
+ * 현재 재생 경과 시간(초)을 "0:00" 또는 "hh:mm:ss" 포맷으로 변환
+ */
+const formatPlaybackTime = (seconds: number): string => {
+  const safeSec = Math.max(0, Math.floor(seconds));
+  const hrs = Math.floor(safeSec / 3600);
+  const mins = Math.floor((safeSec % 3600) / 60);
+  const secs = Math.floor(safeSec % 60);
 
   if (hrs > 0) {
     return `${hrs}:${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
@@ -314,6 +358,7 @@ export const stopGuildMusic = (
     }
   }
   activeGuildMusicSessions.delete(guildId);
+  clearGuildControlRefreshTimer(guildId);
   if (options?.clearQueue !== false) {
     guildMusicQueues.delete(guildId);
     guildLoopModes.delete(guildId);
@@ -492,6 +537,7 @@ const startResolvedTrack = (params: {
       console.warn("[Music] 플레이어 재생 상태 진입 지연:", err?.message || err),
     );
     refreshGuildMusicControlPanel(guildId);
+    ensureGuildControlRefreshTimer(guildId);
     return;
   }
 
@@ -510,6 +556,7 @@ const startResolvedTrack = (params: {
     console.warn("[Music] 유튜브 스트림 재생 상태 진입 지연:", err?.message || err),
   );
   refreshGuildMusicControlPanel(guildId);
+  ensureGuildControlRefreshTimer(guildId);
 };
 
 /**
@@ -600,6 +647,7 @@ const ensureGuildMusicIdleHandler = (
     }
 
     console.log(`[Music:${guildId}] ✅ 모든 대기열 음악 재생 완료`);
+    clearGuildControlRefreshTimer(guildId);
     refreshGuildMusicControlPanel(guildId, { stopped: true });
     binding?.onQueueEnd?.();
   });
@@ -623,9 +671,19 @@ export const skipGuildMusic = async (
 
   transitioningGuilds.add(guildId);
   try {
-    const queue = guildMusicQueues.get(guildId);
-    const nextItem = queue && queue.length > 0 ? queue.shift() : undefined;
-    const remainingQueue = queue ? queue.length : 0;
+    const loopMode = getGuildLoopMode(guildId);
+    const queue = guildMusicQueues.get(guildId) || [];
+    // 전체 반복 모드에서는 스킵한 현재 곡도 대기열 맨 뒤에 다시 추가하여 순환 유지
+    if (loopMode === "queue" && currentSession) {
+      queue.push({
+        track: currentSession.track,
+        requesterName: currentSession.requesterName,
+        addedAt: new Date(),
+      });
+      guildMusicQueues.set(guildId, queue);
+    }
+    const nextItem = queue.length > 0 ? queue.shift() : undefined;
+    const remainingQueue = queue.length;
 
     stopGuildMusic(guildId, { clearQueue: false });
     if (targetPlayer) {
@@ -880,9 +938,22 @@ export const createMusicControlPanel = (
   const nextTrackText =
     queue.length > 0 ? `${queue[0]!.track.title} (외 ${Math.max(0, queue.length - 1)}곡)` : "없음";
 
+  const currentSec = session?.resource
+    ? Math.floor(session.resource.playbackDuration / 1000)
+    : 0;
+  const currentTimeText = formatPlaybackTime(currentSec);
+  const totalTimeText = !session
+    ? "0:00"
+    : session.track.isLocal
+      ? "로컬 음원"
+      : session.track.duration > 0
+        ? session.track.formattedDuration
+        : "실시간";
+  const durationDisplay = session ? `⏱️ ${currentTimeText} / ${totalTimeText}` : "⏱️ 0:00 / 0:00";
+
   const embed = new EmbedBuilder()
     .setColor(isStopped ? 0x64748b : isPaused ? 0xfbbf24 : 0x34d399)
-    .setTitle("🎛️ 설아 뮤직 컨트롤러")
+    .setTitle("🎵 Now Playing")
     .setDescription(
       session
         ? `**현재 트랙:** ${session.track.title}`
@@ -890,6 +961,7 @@ export const createMusicControlPanel = (
     )
     .addFields(
       { name: "상태", value: statusText, inline: true },
+      { name: "재생 시간", value: durationDisplay, inline: true },
       { name: "반복 재생", value: `🔁 ${LOOP_MODE_LABELS[loopMode]}`, inline: true },
       { name: "볼륨", value: `🔊 ${volume}%`, inline: true },
       { name: "다음 곡", value: nextTrackText, inline: false },

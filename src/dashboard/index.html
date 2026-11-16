@@ -808,6 +808,7 @@
     async function triggerRemoteSpeak() {
       const input = document.getElementById("speakInput");
       const btn = document.getElementById("speakBtn");
+      if (btn.disabled) return;
       const text = input.value.trim();
       const guildId = getSelectedGuildId();
       if (!guildId) return showToast("먼저 음성 채널에 봇을 입장시켜 주세요.", "error");
@@ -834,6 +835,7 @@
     }
     document.getElementById("speakBtn").addEventListener("click", triggerRemoteSpeak);
     document.getElementById("speakInput").addEventListener("keydown", (e) => {
+      if (e.isComposing || e.keyCode === 229) return;
       if (e.key === "Enter") {
         e.preventDefault();
         triggerRemoteSpeak();

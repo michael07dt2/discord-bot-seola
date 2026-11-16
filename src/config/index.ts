@@ -31,9 +31,12 @@ export const CONFIG = {
     process.env.WHISPER_MODEL || "onnx-community/whisper-small",
   TTS_PRESET: process.env.TTS_PRESET || "seola",
 
-  // CosyVoice TTS 백엔드 설정 (원격 윈도우 서버 또는 로컬 CosyVoice Gradio 5.x WebUI)
+  // CosyVoice TTS 백엔드 설정 (외부 원격 서버 우선, 무응답 시 내부 로컬 서버 폴백)
   COSYVOICE_API_URL: (
     process.env.COSYVOICE_API_URL || "http://192.168.50.100:50000"
+  ).replace(/\/+$/, ""),
+  COSYVOICE_LOCAL_API_URL: (
+    process.env.COSYVOICE_LOCAL_API_URL || "http://127.0.0.1:50000"
   ).replace(/\/+$/, ""),
   COSYVOICE_MODE: (process.env.COSYVOICE_MODE || "3초 고속 복제") as
     | "3초 고속 복제"

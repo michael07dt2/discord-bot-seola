@@ -1,5 +1,5 @@
 import express from "express";
-import { Client, Events, GatewayIntentBits } from "discord.js";
+import { Client, Events, GatewayIntentBits, Partials } from "discord.js";
 
 import CONFIG from "./config/index.ts";
 import {
@@ -54,8 +54,10 @@ const discordClient = new Client({
     GatewayIntentBits.GuildMembers,
     GatewayIntentBits.GuildVoiceStates,
     GatewayIntentBits.GuildPresences,
+    GatewayIntentBits.DirectMessages,
     GatewayIntentBits.MessageContent,
   ],
+  partials: [Partials.Channel],
 });
 
 // 대시보드 및 실시간 상태 동기화를 위한 스냅샷 생성자

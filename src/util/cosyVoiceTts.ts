@@ -27,36 +27,58 @@ export interface CosyVoiceResult {
   sampleRate: number;
 }
 
-let lastHealthCheckTime = 0;
-let lastHealthCheckResult = false;
+const healthCacheMap = new Map<string, { time: number; ok: boolean }>();
 const HEALTH_CACHE_TTL_MS = 10_000;
 
 /**
- * CosyVoice 서버 가동 여부 빠른 헬스체크 (1.5초 타임아웃)
+ * 특정 CosyVoice 엔드포인트 가동 여부 빠른 헬스체크 (1.5초 타임아웃)
  */
-export const isCosyVoiceAvailable = async (forceCheck = false): Promise<boolean> => {
+const checkCosyVoiceEndpoint = async (
+  rawUrl: string,
+  forceCheck = false,
+): Promise<boolean> => {
+  const baseUrl = rawUrl.replace(/\/+$/, "");
+  if (!baseUrl) return false;
+
   const now = Date.now();
-  if (!forceCheck && now - lastHealthCheckTime < HEALTH_CACHE_TTL_MS) {
-    return lastHealthCheckResult;
+  const cached = healthCacheMap.get(baseUrl);
+  if (!forceCheck && cached && now - cached.time < HEALTH_CACHE_TTL_MS) {
+    return cached.ok;
   }
 
-  const baseUrl = CONFIG.COSYVOICE_API_URL.replace(/\/+$/, "");
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 1500);
+  let ok = false;
 
   try {
     const res = await fetch(`${baseUrl}/gradio_api/info`, {
       signal: controller.signal,
     });
-    lastHealthCheckResult = res.ok;
+    ok = res.ok;
   } catch {
-    lastHealthCheckResult = false;
+    ok = false;
   } finally {
     clearTimeout(timeoutId);
-    lastHealthCheckTime = now;
+    healthCacheMap.set(baseUrl, { time: now, ok });
   }
 
-  return lastHealthCheckResult;
+  return ok;
+};
+
+/**
+ * CosyVoice 서버 가동 여부 빠른 헬스체크 (외부 API 우선, 무응답 시 내부 로컬 API 확인)
+ */
+export const isCosyVoiceAvailable = async (forceCheck = false): Promise<boolean> => {
+  const externalUrl = CONFIG.COSYVOICE_API_URL.replace(/\/+$/, "");
+  const internalUrl = CONFIG.COSYVOICE_LOCAL_API_URL.replace(/\/+$/, "");
+
+  if (await checkCosyVoiceEndpoint(externalUrl, forceCheck)) {
+    return true;
+  }
+  if (internalUrl && internalUrl !== externalUrl) {
+    return await checkCosyVoiceEndpoint(internalUrl, forceCheck);
+  }
+  return false;
 };
 
 // 단일 GPU/MPS 모델의 동시 추론 충돌(CausalConv1d 텐서 소실 및 메모리 경합)을 방지하기 위한 순차 큐
@@ -153,7 +175,48 @@ const doSynthesizeCosyVoiceSentence = async (
   const text = rawText.normalize("NFC").trim();
   if (!text) return null;
 
-  const baseUrl = CONFIG.COSYVOICE_API_URL.replace(/\/+$/, "");
+  const externalUrl = CONFIG.COSYVOICE_API_URL.replace(/\/+$/, "");
+  const internalUrl = CONFIG.COSYVOICE_LOCAL_API_URL.replace(/\/+$/, "");
+  const hasDistinctInternal = Boolean(internalUrl && internalUrl !== externalUrl);
+
+  // 1차: 외부 CosyVoice API 시도
+  const externalAvailable = await checkCosyVoiceEndpoint(externalUrl);
+  if (externalAvailable) {
+    try {
+      return await synthesizeCosyVoiceWithBaseUrl(externalUrl, text, options);
+    } catch (externalErr) {
+      healthCacheMap.set(externalUrl, { time: Date.now(), ok: false });
+      if (!hasDistinctInternal) {
+        throw externalErr;
+      }
+      console.warn(
+        `[CosyVoice] 외부 API(${externalUrl}) 합성 실패 -> 내부 API(${internalUrl})로 폴백합니다:`,
+        externalErr,
+      );
+    }
+  } else if (hasDistinctInternal) {
+    console.warn(
+      `[CosyVoice] 외부 API(${externalUrl}) 응답 없음 -> 내부 API(${internalUrl}) 호출 시도`,
+    );
+  }
+
+  // 2차: 내부 CosyVoice API 시도 (내부 에러 시 throw하여 기본 TTS로 폴백)
+  if (hasDistinctInternal) {
+    const internalAvailable = await checkCosyVoiceEndpoint(internalUrl, true);
+    if (!internalAvailable) {
+      throw new Error(`내부 CosyVoice API(${internalUrl})도 응답하지 않습니다.`);
+    }
+    return await synthesizeCosyVoiceWithBaseUrl(internalUrl, text, options);
+  }
+
+  throw new Error(`외부 CosyVoice API(${externalUrl})가 응답하지 않습니다.`);
+};
+
+const synthesizeCosyVoiceWithBaseUrl = async (
+  baseUrl: string,
+  text: string,
+  options?: CosyVoiceOptions,
+): Promise<CosyVoiceResult | null> => {
   const rawMode = options?.mode || CONFIG.COSYVOICE_MODE;
   // 표준 CosyVoice WebUI ("3초 고속 복제") 및 로컬 구버전 ("3초 음성 복제") 상호 호환
   const mode =

@@ -881,4 +881,10 @@ export const handlePrefixCommand = async (
     await chatAI(message);
     return;
   }
+
+  // DM(개인 메시지)에서는 호출어("설아야") 없이도 바로 AI 대화 응답
+  if (!message.inGuild() && message.content.trim().length > 0) {
+    await chatAI(message);
+    return;
+  }
 };
