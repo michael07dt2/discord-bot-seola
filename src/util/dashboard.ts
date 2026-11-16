@@ -65,6 +65,8 @@ export interface ActiveVoiceSessionStatus {
 
 export interface DashboardMusicState {
   guildId: string;
+  volume: number;
+  loopMode: string;
   currentTrack: {
     title: string;
     isLocal: boolean;
@@ -84,6 +86,7 @@ export interface DashboardStatusSnapshot {
   persona?: {
     id: string;
     name: string;
+    customPrompt?: string | undefined;
   };
   voicePreset: {
     id: string;
@@ -387,16 +390,33 @@ export const registerDashboardRoutes = (
 
   // 6. 실시간 제어 API: 페르소나 변경
   app.post("/api/control/persona", async (req: Request, res: Response) => {
-    const { userName = "micha", personaId, applyToAllUsers } = req.body || {};
+    const {
+      userName = "micha",
+      personaId,
+      customPrompt,
+      applyToAllUsers,
+    } = req.body || {};
     if (!personaId || !(personaId in PERSONA_DEFINITIONS)) {
       res.status(400).json({ error: "유효하지 않은 페르소나 ID입니다." });
       return;
     }
 
     try {
-      const result = await setUserPersona(userName, personaId as PersonaId, undefined, {
-        applyToAllUsers: Boolean(applyToAllUsers),
-      });
+      const incomingPrompt =
+        typeof customPrompt === "string" && customPrompt.trim()
+          ? customPrompt.trim()
+          : undefined;
+      const resolvedCustomPrompt =
+        incomingPrompt ?? (await getUserPersona(userName)).customPrompt;
+
+      const result = await setUserPersona(
+        userName,
+        personaId as PersonaId,
+        resolvedCustomPrompt,
+        {
+          applyToAllUsers: Boolean(applyToAllUsers),
+        },
+      );
       notifyDashboardStatusChanged(getStatusSnapshot());
       res.json({
         success: true,
@@ -513,10 +533,12 @@ export const registerDashboardRoutes = (
       setGuildPlaybackMode(guildId, "music");
       notifyDashboardStatusChanged(getStatusSnapshot());
 
+      const connection = getVoiceConnection(guildId);
       const playResult = await playMusicTrack({
         guildId,
         query: String(songTitle).trim(),
         player: getGuildAudioPlayer(guildId),
+        connection,
         requesterName: "대시보드",
         onQueueEnd: () => {
           setGuildPlaybackMode(guildId, "idle");
@@ -535,6 +557,7 @@ export const registerDashboardRoutes = (
         return;
       }
 
+      notifyDashboardStatusChanged(getStatusSnapshot());
       res.json({
         success: true,
         action: "play",
@@ -599,7 +622,9 @@ export const registerDashboardRoutes = (
   app.get("/api/memories", async (req: Request, res: Response) => {
     const userName = String(req.query["user"] || "micha");
     const memories = await listUserMemories(userName);
-    res.json({ memories });
+    res.json({
+      memories: memories.map(({ embedding: _emb, ...rest }) => rest),
+    });
   });
 
   app.post("/api/memories", async (req: Request, res: Response) => {
@@ -614,7 +639,8 @@ export const registerDashboardRoutes = (
       category,
       importance,
     });
-    res.json({ success: true, item });
+    const { embedding: _emb, ...rest } = item;
+    res.json({ success: true, item: rest });
   });
 
   app.delete("/api/memories/:id", async (req: Request, res: Response) => {

@@ -9,7 +9,7 @@ import {
   entersState,
   VoiceConnectionStatus,
 } from "@discordjs/voice";
-import { asc, eq, sql } from "drizzle-orm";
+import { desc, eq, sql } from "drizzle-orm";
 import { db, contextsTable, userModelsTable } from "../db/index.ts";
 import CONFIG from "../config/index.ts";
 import {
@@ -31,6 +31,13 @@ import {
   executeSeolaTool,
   SEOLA_TOOLS,
 } from "./tools.ts";
+import {
+  extractVoicePresetCommand,
+  getCurrentVoicePreset,
+  notifyVoiceDashboardStatusChanged,
+  setVoicePreset,
+  VOICE_PRESETS,
+} from "./voiceChat.ts";
 
 const openAiClient = new OpenAI({
   baseURL: `${CONFIG.OLLAMA_BASE_URL}/v1`,
@@ -702,6 +709,58 @@ export const generateAIResponse = async (
     }
   }
 
+  // 대화형 목소리(TTS) 프리셋 조회/변경 명령 처리
+  const voiceCmd = extractVoicePresetCommand(userMessage);
+  if (voiceCmd) {
+    try {
+      if (voiceCmd.type === "list") {
+        const current = getCurrentVoicePreset();
+        const presetLines = Object.values(VOICE_PRESETS)
+          .map(
+            (p) =>
+              `• **${p.label}** (\`${p.id}\`): ${p.description}${p.id === current.id ? " ✅" : ""}`,
+          )
+          .join("\n");
+        const reply = options?.isVoiceMode
+          ? `지금 내 목소리는 ${current.label}이야! 설아, 케이, 큐웬, 코지, 레바, 감규리, 다시는 만날 수 없는, 발랄, 차분, 속삭임, 멜로, 아바, 선희 중에서 고를 수 있어.`
+          : `🗣️ **현재 설아 목소리:** **${current.label}** (\`${current.id}\`)\n\n**사용 가능한 목소리 프리셋:**\n${presetLines}\n\n변경 방법: \`!voice <이름>\` 또는 \`설아야 목소리 <이름>으로 바꿔줘\``;
+        if (options?.onSentence) {
+          options.onSentence(reply);
+        }
+        return reply;
+      }
+
+      if (voiceCmd.type === "current") {
+        const current = getCurrentVoicePreset();
+        const reply = options?.isVoiceMode
+          ? `지금 설정된 내 목소리는 ${current.label}이야!`
+          : `🗣️ 현재 설아 목소리는 **${current.label}** (\`${current.id}\`) 입니다.`;
+        if (options?.onSentence) {
+          options.onSentence(reply);
+        }
+        return reply;
+      }
+
+      if (voiceCmd.type === "change") {
+        const updated = await setVoicePreset(voiceCmd.presetId);
+        if (updated) {
+          notifyVoiceDashboardStatusChanged();
+          const reply = options?.isVoiceMode
+            ? `목소리를 ${updated.label}로 바꿔봤어! 어때, 마음에 들어?`
+            : `🗣️ 설아의 목소리가 **${updated.label}**(\`${updated.id}\`)(으)로 변경되었습니다!`;
+          if (options?.onSentence) {
+            options.onSentence(reply);
+          }
+          await appendConversationContext(userName, userMessage, reply);
+          return reply;
+        }
+      }
+    } catch (error) {
+      console.error("목소리 프리셋 명령 처리 중 오류 발생:", error);
+      return "목소리 설정을 변경하는 중 오류가 발생했습니다.";
+    }
+  }
+
   let contextData: (typeof contextsTable.$inferSelect)[] = [];
   if (userName) {
     try {
@@ -710,10 +769,11 @@ export const generateAIResponse = async (
         .select()
         .from(contextsTable)
         .where(eq(contextsTable.name, userName))
-        .orderBy(asc(contextsTable.id));
+        .orderBy(desc(contextsTable.id))
+        .limit(30);
 
       if (context.length > 0) {
-        contextData = context;
+        contextData = context.reverse();
       }
     } catch (error) {
       console.error("데이터베이스 조회 중 오류 발생:", error);
@@ -772,21 +832,34 @@ export const generateAIResponse = async (
       role: "developer",
       content: systemPromptContent + memorySection,
     },
-    ...contextData.map((context): ChatCompletionMessageParam => {
-      const parsed = JSON.parse(context.context) as ChatCompletionMessageParam & {
-        createdAt?: string;
-      };
-      const ts = formatContextTimestamp(context.createdAt ?? parsed.createdAt);
-      if (parsed.role === "user" && typeof parsed.content === "string" && ts) {
-        return {
-          role: "user",
-          content: `[대화 일시: ${ts}] ${parsed.content}`,
+    ...contextData.flatMap((context): ChatCompletionMessageParam[] => {
+      try {
+        const parsed = JSON.parse(
+          context.context,
+        ) as ChatCompletionMessageParam & {
+          createdAt?: string;
         };
+        if (!parsed || typeof parsed.role !== "string") {
+          return [];
+        }
+        const ts = formatContextTimestamp(context.createdAt ?? parsed.createdAt);
+        if (parsed.role === "user" && typeof parsed.content === "string" && ts) {
+          return [
+            {
+              role: "user",
+              content: `[대화 일시: ${ts}] ${parsed.content}`,
+            },
+          ];
+        }
+        return [
+          {
+            role: parsed.role,
+            content: parsed.content,
+          } as ChatCompletionMessageParam,
+        ];
+      } catch {
+        return [];
       }
-      return {
-        role: parsed.role,
-        content: parsed.content,
-      } as ChatCompletionMessageParam;
     }),
     {
       role: "user",

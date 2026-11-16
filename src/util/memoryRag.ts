@@ -9,7 +9,25 @@ export interface MemoryItem {
   category: string;
   importance: number;
   createdAt: string;
+  embedding?: number[] | undefined;
 }
+
+const parseEmbeddingJson = (raw?: string | null): number[] | undefined => {
+  if (!raw) return undefined;
+  try {
+    const parsed = JSON.parse(raw);
+    if (
+      Array.isArray(parsed) &&
+      parsed.length > 0 &&
+      typeof parsed[0] === "number"
+    ) {
+      return parsed as number[];
+    }
+  } catch {
+    // 손상된 JSON 임베딩 무시
+  }
+  return undefined;
+};
 
 let isMemoriesTableInitialized = false;
 
@@ -170,6 +188,7 @@ export const saveUserMemory = async (params: {
     category,
     importance,
     createdAt: new Date().toISOString(),
+    embedding,
   };
 
   const userList = memoryCache.get(userName) || [];
@@ -198,6 +217,7 @@ export const listUserMemories = async (userName: string): Promise<MemoryItem[]> 
       category: r.category,
       importance: r.importance,
       createdAt: r.createdAt.toISOString(),
+      embedding: parseEmbeddingJson(r.embedding),
     }));
 
     memoryCache.set(userName, list);
@@ -258,7 +278,10 @@ export const retrieveRelevantMemories = async (
       }
     }
 
-    const itemVec = await getEmbedding(item.memory);
+    const itemVec =
+      item.embedding && item.embedding.length > 0
+        ? item.embedding
+        : await getEmbedding(item.memory);
     const cosScore = cosineSimilarity(queryVec, itemVec);
     const totalScore = cosScore + keywordOverlap + (item.importance * 0.05);
 

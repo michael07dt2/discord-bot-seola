@@ -342,6 +342,9 @@
             </select>
             <button class="btn btn-primary" id="applyPersonaBtn">적용</button>
           </div>
+          <div class="control-row" id="customPromptRow" style="display: none;">
+            <input type="text" id="customPromptInput" placeholder="사용자 정의 시스템 프롬프트 입력..." />
+          </div>
         </div>
 
         <!-- 목소리 프리셋 설정 -->
@@ -522,6 +525,7 @@
     let allLogs = [];
     let activeSessions = [];
     let activeMusicStates = [];
+    let lastStatusSnapshot = null;
     let sortDescending = true;
 
     const logsContainer = document.getElementById("logsContainer");
@@ -578,21 +582,29 @@
     // 2. 상태 렌더링
     function renderStatus(status) {
       if (!status) return;
+      lastStatusSnapshot = status;
       botTagPill.textContent = "🤖 " + (status.botTag || "Seola");
       memoryVal.textContent = (status.memoryMb || 0) + " MB";
       uptimeVal.textContent = formatUptime(status.uptimeSec || 0);
+      const personaSelectEl = document.getElementById("personaSelect");
+      const customPromptRowEl = document.getElementById("customPromptRow");
+      const customPromptInputEl = document.getElementById("customPromptInput");
       if (status.persona) {
         personaVal.textContent = status.persona.name;
-        document.getElementById("personaSelect").value = status.persona.id;
+        if (
+          document.activeElement !== personaSelectEl &&
+          document.activeElement !== customPromptInputEl
+        ) {
+          personaSelectEl.value = status.persona.id;
+          customPromptRowEl.style.display = status.persona.id === "custom" ? "flex" : "none";
+          if (status.persona.customPrompt !== undefined) {
+            customPromptInputEl.value = status.persona.customPrompt || "";
+          }
+        }
       }
       if (status.voicePreset) {
         presetVal.textContent = status.voicePreset.label;
         document.getElementById("presetSelect").value = status.voicePreset.id;
-      }
-      if (status.musicVolume !== undefined) {
-        const v = status.musicVolume;
-        document.getElementById("volumeSlider").value = v;
-        document.getElementById("volumeVal").textContent = v + "%";
       }
       activeSessions = status.sessions || [];
       activeMusicStates = status.musicStates || [];
@@ -617,6 +629,14 @@
         `;
 
         const musicState = activeMusicStates.find((m) => m.guildId === selected.guildId);
+        const effectiveVolume =
+          musicState && musicState.volume !== undefined
+            ? musicState.volume
+            : status.musicVolume;
+        if (effectiveVolume !== undefined && document.activeElement !== document.getElementById("volumeSlider")) {
+          document.getElementById("volumeSlider").value = effectiveVolume;
+          document.getElementById("volumeVal").textContent = effectiveVolume + "%";
+        }
         if (musicState && (musicState.currentTrack || (musicState.queue && musicState.queue.length > 0))) {
           const trackTitle = musicState.currentTrack ? escapeHtml(musicState.currentTrack.title) : "없음";
           const queueList = musicState.queue || [];
@@ -639,6 +659,10 @@
         sessionStatusBox.innerHTML = '<span class="status-chip off">미접속</span><span>음성 채널에 연결되어 있지 않습니다.</span>';
         nowPlayingBox.style.display = "none";
         nowPlayingBox.innerHTML = "";
+        if (status.musicVolume !== undefined && document.activeElement !== document.getElementById("volumeSlider")) {
+          document.getElementById("volumeSlider").value = status.musicVolume;
+          document.getElementById("volumeVal").textContent = status.musicVolume + "%";
+        }
       }
     }
 
@@ -741,8 +765,14 @@
     };
 
     // 5. 원격 제어 이벤트 리스너
+    document.getElementById("personaSelect").addEventListener("change", (e) => {
+      document.getElementById("customPromptRow").style.display =
+        e.target.value === "custom" ? "flex" : "none";
+    });
+
     document.getElementById("applyPersonaBtn").addEventListener("click", async () => {
       const personaId = document.getElementById("personaSelect").value;
+      const customPromptVal = document.getElementById("customPromptInput").value.trim();
       const selectedUser = userFilter.value;
       const userName = selectedUser || "micha";
       try {
@@ -752,6 +782,7 @@
           body: JSON.stringify({
             userName,
             personaId,
+            ...(personaId === "custom" && customPromptVal ? { customPrompt: customPromptVal } : {}),
             applyToAllUsers: !selectedUser,
           }),
         });
@@ -909,7 +940,7 @@
         body: JSON.stringify({ guildId, action: "clear_queue" }),
       });
       const data = await res.json();
-      if (res.ok) showToast(`대기열 ${data.clearedCount || 0}곡을 비웠습니다.`, "info");
+      if (res.ok) showToast(`대기열 ${data.removedCount ?? data.clearedCount ?? 0}곡을 비웠습니다.`, "info");
     });
 
     const volumeSlider = document.getElementById("volumeSlider");
@@ -957,13 +988,9 @@
     userFilter.addEventListener("change", renderLogs);
     actionFilter.addEventListener("change", renderLogs);
     sessionSelect.addEventListener("change", () => {
-      renderStatus({
-        botTag: botTagPill.textContent.replace(/^🤖\s*/, ""),
-        uptimeSec: 0,
-        memoryMb: parseInt(memoryVal.textContent, 10) || 0,
-        sessions: activeSessions,
-        musicStates: activeMusicStates,
-      });
+      if (lastStatusSnapshot) {
+        renderStatus(lastStatusSnapshot);
+      }
     });
     document.getElementById("refreshBtn").addEventListener("click", async () => {
       await fetchInitialData();

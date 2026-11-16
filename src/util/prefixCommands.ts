@@ -13,6 +13,8 @@ import {
   getVoiceConnection,
   StreamType,
 } from "@discordjs/voice";
+import { eq } from "drizzle-orm";
+import { db, contextsTable } from "../db/index.ts";
 import { getGuildAudioPlayer } from "./audioPlayer.ts";
 import {
   chatAI,
@@ -39,6 +41,7 @@ import {
   getGuildMusicQueue,
   skipGuildMusic,
   clearGuildMusicQueue,
+  removeGuildMusicQueueItem,
 } from "./youtubeMusic.ts";
 import {
   getBotStatusReport,
@@ -110,9 +113,10 @@ export const handlePrefixCommand = async (
         {
           name: "⚡ 슬래시(/) 명령어",
           value: [
-            "`/chat` 대화 | `/persona` 페르소나 변경 | `/voice` 음성통화 제어",
-            "`/preset` 목소리 변경 | `/model` 모델 변경 | `/music` 음악 재생",
-            "`/search` 웹 검색 | `/improve` 자기개선 | `/status` 상태 | `/help` 도움말",
+            "`/chat` 대화 | `/join` 입장 | `/speak` 발화 | `/play` 음악재생",
+            "`/persona` 페르소나 | `/voice` 음성통화 제어 | `/preset` 목소리 | `/model` 모델",
+            "`/music` 음악관리 | `/volume` 음량 | `/memory` 기억 | `/clear` 대화초기화",
+            "`/search` 웹 검색 | `/improve` 자기개선 | `/dashboard` | `/status` | `/help` 도움말",
           ].join("\n"),
         },
         {
@@ -121,13 +125,14 @@ export const handlePrefixCommand = async (
             "`!persona` 또는 `!페르소나` — 사용 가능한 페르소나 목록 확인",
             "`!persona <이름>` 또는 `설아야 페르소나 <이름>` — 페르소나 변경",
             "`!persona custom <프롬프트>` — 원하는 시스템 프롬프트 직접 등록",
-            "지원 페르소나: `girlfriend`(여자친구), `assistant`(비서), `tsundere`(츤데레), `senior`(선배), `cute`(발랄), `custom`(사용자지정)",
+            "지원 페르소나: `girlfriend`(여자친구), `assistant`(비서), `tsundere`(츤데레), `senior`(선배), `cute`(발랄), `menhera`(멘헤라), `custom`(사용자지정)",
           ].join("\n"),
         },
         {
           name: "💬 AI 텍스트 대화",
           value: [
             "`설아야 <할 말>` 또는 `설아 <할 말>` — 설아와 대화 (개인별 문맥 유지)",
+            "`!clear` 또는 `!대화초기화` — 이전 대화 기록 초기화",
           ].join("\n"),
         },
         {
@@ -136,8 +141,9 @@ export const handlePrefixCommand = async (
             "`설아야 이리온` / `설아야 들어와` / `설아야 통화하자` — 음성 채널 입장 및 실시간 대화 시작",
             "*(1:1 통화 시에는 호출어 없이 바로 대답하며, 사람이 여러 명일 때는 `설아야`라고 부르며 질문한 경우에만 대답합니다. 음성 대화록은 대시보드에 실시간 기록됩니다)*",
             `\`!dashboard\` / \`!대시보드\` — 실시간 음성 대화록 웹 대시보드 주소 확인 (${dashboardUrl})`,
+            "`!speak <문장>` / `!발화 <문장>` — 음성 채널에서 지정한 문장 TTS 발화",
             "`설아야 조용히 해` / `설아야 음성대화 꺼줘` — 음성 듣기 일시 중지",
-            "`설아야 다시 말해` / `설아야 음성대화 꺼줘` — 음성 듣기 재개",
+            "`설아야 다시 말해` / `설아야 음성대화 켜줘` — 음성 듣기 재개",
             "`설아야 꺼져` — 음성 채널 퇴장 *(음성으로 말해도 퇴장 가능)*",
           ].join("\n"),
         },
@@ -146,7 +152,7 @@ export const handlePrefixCommand = async (
           value: [
             "`!voice` 또는 `!목소리` — 사용 가능한 목소리 프리셋 목록 확인 (로컬 MeloTTS-Korean 기본 적용)",
             "`!voice <이름>` 또는 `!목소리 <이름>` — 설아 목소리 변경",
-            "지원 프리셋: `설아`(`seola`), `발랄`(`lively`), `차분`(`calm`), `속삭임`(`whisper`), `멜로`(`melo`), `아바`(`ava`), `선희`(`sunhi`)",
+            "지원 프리셋: `케이`(`kei`), `큐웬`(`qwen`), `코지`(`cosy`), `레바`(`reva`), `감규리`(`gamgyuri`), `다시는 만날 수 없는`(`myoya`, `myoya_cosy`), `설아`(`seola`), `발랄`(`lively`), `차분`(`calm`), `속삭임`(`whisper`), `멜로`(`melo`), `아바`(`ava`), `선희`(`sunhi`)",
           ].join("\n"),
         },
         {
@@ -170,8 +176,10 @@ export const handlePrefixCommand = async (
           name: "🎵 음악 재생 및 대기열 (텍스트 및 음성 명령 모두 가능)",
           value: [
             "`!play <곡명/링크>` / `설아야 <곡명> 틀어줘` — 음악 재생 *(재생 중이면 대기열 추가)*",
+            "`!now` / `!현재곡` — 현재 재생 중인 곡 정보 확인",
             "`!queue` / `!대기열` / `설아야 대기열` — 현재 재생 곡 및 대기열 목록 확인",
             "`!skip` / `!스킵` / `설아야 다음곡` — 다음 곡으로 건너뛰기",
+            "`!remove <번호>` / `!대기열삭제 <번호>` — 대기열 특정 순번 곡 삭제",
             "`!clearqueue` / `!대기열비우기` — 대기열 비우기",
             "`!volume <0~100>` 또는 `!볼륨 <수치>` — 음악 재생 음량 조절 *(기본 20%)*",
             "`!stop` / `설아야 노래 꺼줘` — 음악 및 대기열 중지",
@@ -566,6 +574,64 @@ export const handlePrefixCommand = async (
     }
   }
 
+  // 대화 기록 초기화 명령어 (!clear, !대화초기화)
+  if (/^(!clear|!대화초기화)\s*$/i.test(message.content.trim())) {
+    const userName = getUserKey(message);
+    try {
+      await db.delete(contextsTable).where(eq(contextsTable.name, userName));
+      await message.reply(
+        `🧹 **${userName}**님과의 이전 대화 기록을 모두 깨끗이 비웠어요! 이제 새로운 기분으로 대화해요.`,
+      );
+    } catch (err) {
+      console.error("[PrefixCommand] 대화 초기화 실패:", err);
+      await message.reply("❌ 대화 기록을 초기화하는 중 오류가 발생했습니다.");
+    }
+    return;
+  }
+
+  // 음성 채널 TTS 발화 명령어 (!speak <문장>, !발화 <문장>)
+  if (/^(!speak|!발화)(?:\s+.*)?$/i.test(message.content.trim())) {
+    const guildId = message.guild?.id;
+    if (!guildId) {
+      await message.reply("❌ 서버(길드) 채널에서만 사용할 수 있습니다.");
+      return;
+    }
+    const text = message.content
+      .trim()
+      .replace(/^(!speak|!발화)\s*/i, "")
+      .trim();
+    if (!text) {
+      await message.reply(
+        "말할 문장을 입력해주세요. (예: `!speak 안녕 반가워`)",
+      );
+      return;
+    }
+    const connection = getVoiceConnection(guildId);
+    if (!connection) {
+      await message.reply(
+        "❌ 설아가 현재 이 서버의 음성 채널에 연결되어 있지 않습니다. 먼저 `설아야 이리온` 또는 `/join`으로 불러주세요!",
+      );
+      return;
+    }
+    try {
+      const userName = getUserKey(message);
+      await speakInVoiceChannel(
+        connection,
+        getGuildAudioPlayer(guildId),
+        guildId,
+        text,
+      );
+      await appendConversationContext(userName, message.content, text);
+      await message.reply(
+        `🗣️ **${userName}**님의 요청으로 발화했습니다: "${text}"`,
+      );
+    } catch (err) {
+      console.error("[PrefixCommand] !speak 실패:", err);
+      await message.reply("❌ 음성 발화 중 오류가 발생했습니다.");
+    }
+    return;
+  }
+
   // 음악 대기열 비우기 프리픽스 명령
   if (
     /^(!clearqueue|!대기열비우기|!큐비우기|설아야?\s*(?:대기열|큐)\s*(?:비워줘|초기화|삭제))$/i.test(
@@ -575,6 +641,7 @@ export const handlePrefixCommand = async (
     const guildId = message.guild?.id;
     if (guildId) {
       const count = clearGuildMusicQueue(guildId);
+      notifyDashboardStatusChanged(getDashboardStatusSnapshot());
       await message.reply(
         count > 0
           ? `🗑️ 음악 대기열에서 **${count}곡**을 모두 비웠습니다.`
@@ -582,6 +649,77 @@ export const handlePrefixCommand = async (
       );
       return;
     }
+  }
+
+  // 대기열 특정 순번 곡 삭제 프리픽스 명령 (!remove <번호>, !대기열삭제 <번호>)
+  if (/^(!remove|!대기열삭제)(?:\s+.*)?$/i.test(message.content.trim())) {
+    const guildId = message.guild?.id;
+    if (!guildId) {
+      await message.reply("❌ 서버(길드) 채널에서만 사용할 수 있습니다.");
+      return;
+    }
+    const rawArg = message.content
+      .trim()
+      .replace(/^(!remove|!대기열삭제)\s*/i, "")
+      .trim();
+    const index = parseInt(rawArg, 10);
+    if (!rawArg || Number.isNaN(index) || index < 1) {
+      await message.reply(
+        "❌ 삭제할 대기열 번호를 1 이상의 숫자로 입력해주세요. (예: `!remove 1`)",
+      );
+      return;
+    }
+    const removed = removeGuildMusicQueueItem(guildId, index);
+    if (!removed) {
+      await message.reply(
+        `❌ 대기열 ${index}번에 해당하는 곡을 찾을 수 없습니다.`,
+      );
+      return;
+    }
+    notifyDashboardStatusChanged(getDashboardStatusSnapshot());
+    await message.reply(
+      `🗑️ 대기열 **#${index}번** 곡(**${removed.track.title}**)을 삭제했습니다.`,
+    );
+    return;
+  }
+
+  // 현재 재생 중인 곡 정보 확인 프리픽스 명령 (!now, !현재곡)
+  if (/^(!now|!현재곡)\s*$/i.test(message.content.trim())) {
+    const guildId = message.guild?.id;
+    if (!guildId) {
+      await message.reply("❌ 서버(길드) 채널에서만 사용할 수 있습니다.");
+      return;
+    }
+    const currentSession = getGuildCurrentTrack(guildId);
+    if (!currentSession) {
+      await message.reply("현재 재생 중인 음악이 없습니다.");
+      return;
+    }
+    const track = currentSession.track;
+    if (track.isLocal) {
+      await message.reply(
+        `🎶 현재 **${track.title}** (로컬 음원) 재생 중입니다.`,
+      );
+      return;
+    }
+    const embed = new EmbedBuilder()
+      .setColor(0xff0000)
+      .setTitle(`🎶 현재 재생 중: ${track.title}`)
+      .setURL(track.url)
+      .addFields(
+        { name: "채널", value: track.uploader || "YouTube", inline: true },
+        { name: "재생 시간", value: track.formattedDuration, inline: true },
+        {
+          name: "신청자",
+          value: currentSession.requesterName || "알 수 없음",
+          inline: true,
+        },
+      );
+    if (track.thumbnail) {
+      embed.setThumbnail(track.thumbnail);
+    }
+    await message.reply({ embeds: [embed] });
+    return;
   }
 
   // 음악 중지 프리픽스 명령

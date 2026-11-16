@@ -16,6 +16,7 @@ import {
   preloadWhisperModel,
   restoreVoiceSessionsIfRecent,
   setGuildPlaybackMode,
+  setVoiceChatDependencies,
 } from "./util/voiceChat.ts";
 import {
   getCurrentDefaultPersona,
@@ -28,6 +29,7 @@ import {
 } from "./util/dashboard.ts";
 import {
   getGuildCurrentTrack,
+  getGuildLoopMode,
   getGuildMusicQueue,
   getGuildMusicVolumePercent,
   handleMusicControlButton,
@@ -70,6 +72,8 @@ const getDashboardStatusSnapshot = (): DashboardStatusSnapshot => {
     const queue = getGuildMusicQueue(s.guildId);
     return {
       guildId: s.guildId,
+      volume: getGuildMusicVolumePercent(s.guildId),
+      loopMode: getGuildLoopMode(s.guildId),
       currentTrack: current
         ? {
             title: current.track.title,
@@ -91,19 +95,23 @@ const getDashboardStatusSnapshot = (): DashboardStatusSnapshot => {
     persona: {
       id: persona.id,
       name: persona.name,
+      ...(persona.customPrompt ? { customPrompt: persona.customPrompt } : {}),
     },
     voicePreset: {
       id: preset.id,
       label: preset.label,
     },
-    musicVolume: getGuildMusicVolumePercent(),
+    musicVolume: getGuildMusicVolumePercent(sessions[0]?.guildId),
     sessions,
     musicStates,
   };
 };
 
-// 슬래시 명령어 핸들러에 의존성 주입
+// 슬래시 명령어 및 음성 모듈 핸들러에 의존성 주입
 setSlashCommandDependencies({
+  getDashboardStatusSnapshot,
+});
+setVoiceChatDependencies({
   getDashboardStatusSnapshot,
 });
 

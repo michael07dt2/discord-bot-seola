@@ -380,6 +380,9 @@ export const clearGuildMusicQueue = (guildId: string): number => {
   const queue = guildMusicQueues.get(guildId);
   const count = queue?.length || 0;
   guildMusicQueues.delete(guildId);
+  if (count > 0) {
+    refreshGuildMusicControlPanel(guildId);
+  }
   return count;
 };
 
@@ -395,6 +398,9 @@ export const removeGuildMusicQueueItem = (
     return null;
   }
   const [removed] = queue.splice(index1Based - 1, 1);
+  if (removed) {
+    refreshGuildMusicControlPanel(guildId);
+  }
   return removed || null;
 };
 
@@ -568,7 +574,12 @@ const ensureGuildMusicIdleHandler = (
   connection?: VoiceConnection,
   onQueueEnd?: () => void,
 ): void => {
-  guildPlayerBindings.set(guildId, { player, connection, onQueueEnd });
+  const existingBinding = guildPlayerBindings.get(guildId);
+  guildPlayerBindings.set(guildId, {
+    player,
+    connection: connection ?? existingBinding?.connection,
+    onQueueEnd: onQueueEnd ?? existingBinding?.onQueueEnd,
+  });
 
   if (hookedPlayers.has(player)) {
     return;

@@ -486,10 +486,14 @@ export const slashCommands = [
             .setDescription("기억 카테고리")
             .setRequired(false)
             .addChoices(
-              { name: "일반/취향", value: "preference" },
-              { name: "신상/기념일", value: "profile" },
+              { name: "취향/선호", value: "preference" },
+              { name: "생일/기념일", value: "birthday" },
               { name: "취미/여가", value: "hobby" },
+              { name: "직업/학업", value: "job" },
+              { name: "비선호/싫어하는 것", value: "dislike" },
               { name: "음식/식습관", value: "food" },
+              { name: "신상/프로필", value: "profile" },
+              { name: "일반", value: "general" },
             ),
         ),
     )
@@ -1012,6 +1016,19 @@ export const handleSlashCommand = async (
             ),
         ],
       });
+
+      // 음성 채널에 연결되어 있다면 샘플 인사 발화
+      if (interaction.guildId) {
+        const connection = getVoiceConnection(interaction.guildId);
+        if (connection) {
+          await speakInVoiceChannel(
+            connection,
+            getGuildAudioPlayer(interaction.guildId),
+            interaction.guildId,
+            "목소리를 바꿔봤는데 어때? 마음에 들어?",
+          ).catch(() => {});
+        }
+      }
       return;
     }
 
@@ -1472,9 +1489,9 @@ export const handleSlashCommand = async (
             name: "💬 대화 및 페르소나 설정",
             value: [
               `\`/persona set\` 또는 \`!persona <이름>\` — 페르소나 변경 (현재: **${personaDef.name}**)`,
-              "페르소나 종류: `girlfriend`(여자친구), `assistant`(비서), `tsundere`(츤데레), `senior`(선배), `cute`(발랄), `custom`(사용자 정의)",
+              "페르소나 종류: `girlfriend`(여자친구), `assistant`(비서), `tsundere`(츤데레), `senior`(선배), `cute`(발랄), `menhera`(멘헤라), `custom`(사용자 정의)",
               "`/persona custom [prompt]` — 나만의 시스템 프롬프트 직접 지정",
-              "`/clear` — 이전 대화 내역 초기화",
+              "`/clear` 또는 `!clear` — 이전 대화 내역 초기화",
             ].join("\n"),
           },
           {
@@ -1489,8 +1506,9 @@ export const handleSlashCommand = async (
             name: "🎙️ 실시간 음성 통화 및 목소리",
             value: [
               "`/join` 또는 `설아야 이리온` — 음성 채널 입장 및 실시간 통화",
+              "`/voice pause` / `/voice resume` — 음성 듣기 일시정지 및 재개",
               "`/voice leave` 또는 `설아야 꺼져` — 음성 채널 퇴장",
-              "`/speak text:<내용>` — 음성 채널에서 텍스트 TTS 발화",
+              "`/speak text:<내용>` 또는 `!speak <내용>` — 음성 채널에서 텍스트 TTS 발화",
               `\`/preset [voice]\` 또는 \`!voice <이름>\` — 목소리 변경 (현재: **${currentPreset.label}**)`,
               "지원 프리셋: `kei`, `qwen`, `cosy`, `reva`, `gamgyuri`, `myoya`, `myoya_cosy`, `seola`, `lively`, `calm`, `whisper`, `melo`, `ava`, `sunhi`",
             ].join("\n"),
