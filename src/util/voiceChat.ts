@@ -27,7 +27,9 @@ import {
   generateAIResponse,
   appendConversationContext,
   connectToVoiceChannel,
+  getUserModel,
 } from "./helper.ts";
+import { formatDurationMs, logVoicePipelineTiming } from "./logger.ts";
 import { songMap } from "./songmap.ts";
 import {
   playMusicTrack,
@@ -2171,6 +2173,15 @@ const acquireGuildTtsPlayback = async (
   };
 };
 
+export interface TtsPipelineStats {
+  totalMs: number;
+  totalSynthMs: number;
+  totalPlayMs: number;
+  firstPlaybackAtMs: number | null;
+  sentenceCount: number;
+  presetId: string;
+}
+
 /**
  * 문장 단위 스트리밍 합성 및 순차 재생 파이프라인 생성
  * - 문장이 들어오는 즉시 백그라운드에서 MeloTTS-Korean 합성을 선행(Prefetch) 시작하고,
@@ -2183,12 +2194,17 @@ export const createSentenceSpeechPipeline = (
   guildId: string,
   options?: { maxSentences?: number },
 ) => {
+  const pipelineStartMs = Date.now();
   // 고부하 신경망 TTS(CosyVoice)의 병렬 폭주 및 소켓 타임아웃을 방지하기 위해 작업 함수 큐로 순차 처리
   const synthesisQueue: (() => Promise<SynthesizedSpeechResource | null>)[] =
     [];
   // 음성 통화 환경에 맞춰 발화 문장을 최대 3문장으로 제한 (과도하게 긴 대답 및 무한 루프 발화 방지)
   const maxSentences = options?.maxSentences ?? 3;
   let enqueuedSentenceCount = 0;
+  let synthesizedCount = 0;
+  let totalSynthMs = 0;
+  let totalPlayMs = 0;
+  let firstPlaybackAtMs: number | null = null;
   let isFinished = false;
   let wakeConsumer: (() => void) | null = null;
   let ttsPlaybackHandle: {
@@ -2217,7 +2233,9 @@ export const createSentenceSpeechPipeline = (
 
         const nextSynthTask = synthesisQueue.shift()!;
         // 순차적으로 다음 문장을 합성하여 서버 부하 및 소켓 드랍 방지
+        const synthStartMs = Date.now();
         const ttsResult = await nextSynthTask();
+        totalSynthMs += Date.now() - synthStartMs;
         if (!ttsResult) continue;
 
         if (!ttsPlaybackHandle) {
@@ -2233,17 +2251,23 @@ export const createSentenceSpeechPipeline = (
             inputType: ttsResult.inputType,
           });
 
+          const playStartMs = Date.now();
           ttsPlaybackHandle.ttsPlayer.play(resource);
           await entersState(
             ttsPlaybackHandle.ttsPlayer,
             AudioPlayerStatus.Playing,
             5_000,
           );
+          if (firstPlaybackAtMs === null) {
+            firstPlaybackAtMs = Date.now();
+          }
           await entersState(
             ttsPlaybackHandle.ttsPlayer,
             AudioPlayerStatus.Idle,
             60_000,
           );
+          totalPlayMs += Date.now() - playStartMs;
+          synthesizedCount++;
         } catch (error) {
           console.error(
             "[VoiceChat] 문장 단위 TTS 오디오 재생 중 오류:",
@@ -2301,10 +2325,18 @@ export const createSentenceSpeechPipeline = (
     notifyQueueUpdated();
   };
 
-  const finish = async (): Promise<void> => {
+  const finish = async (): Promise<TtsPipelineStats> => {
     isFinished = true;
     notifyQueueUpdated();
     await consumerPromise;
+    return {
+      totalMs: Date.now() - pipelineStartMs,
+      totalSynthMs,
+      totalPlayMs,
+      firstPlaybackAtMs,
+      sentenceCount: synthesizedCount,
+      presetId: getCurrentVoicePreset().id,
+    };
   };
 
   return {
@@ -2321,14 +2353,20 @@ export const speakInVoiceChannel = async (
   player: AudioPlayer,
   guildId: string,
   text: string,
-): Promise<void> => {
+): Promise<TtsPipelineStats> => {
   const speechPipeline = createSentenceSpeechPipeline(
     connection,
     player,
     guildId,
   );
   speechPipeline.enqueueSentence(text);
-  await speechPipeline.finish();
+  const stats = await speechPipeline.finish();
+  if (stats.sentenceCount > 0) {
+    console.log(
+      `[TTS] 🗣️ 발화 완료 (${stats.presetId}, 합성 ${formatDurationMs(stats.totalSynthMs)}, 재생 ${formatDurationMs(stats.totalPlayMs)}, 총 ${formatDurationMs(stats.totalMs)})`,
+    );
+  }
+  return stats;
 };
 
 /**
@@ -2593,7 +2631,7 @@ export const setupVoiceChatListener = (params: {
             "사용자";
 
           console.log(
-            `[VoiceChat] 🎙️ ${userName} (${durationSec.toFixed(1)}s, rms=${rms.toFixed(3)}, peak=${peak.toFixed(2)}, stt=${sttElapsedMs}ms, 인원=${humanMemberCount}명): ${transcribedText}`,
+            `[STT] 🎙️ ${userName} (${durationSec.toFixed(1)}s, rms=${rms.toFixed(3)}, peak=${peak.toFixed(2)}, 소요=${formatDurationMs(sttElapsedMs)}, 인원=${humanMemberCount}명): ${transcribedText}`,
           );
 
           // 1. 음성 명령: 퇴장 ("설아야 꺼져", "설아야 나가")
@@ -2865,6 +2903,9 @@ export const setupVoiceChatListener = (params: {
             `[VoiceChat:Debug] 🚀 AI 대답 생성 시작: prompt="${promptText}", user="${userName}"`,
           );
 
+          const llmStartMs = Date.now();
+          let firstSentenceAtMs: number | null = null;
+
           const speechPipeline = createSentenceSpeechPipeline(
             connection,
             player,
@@ -2878,12 +2919,16 @@ export const setupVoiceChatListener = (params: {
             humanMemberCount,
             channel: session.textChannel,
             onSentence: (sentence) => {
+              if (firstSentenceAtMs === null) {
+                firstSentenceAtMs = Date.now();
+              }
               console.log(
                 `[VoiceChat:Debug] 🔊 TTS 파이프라인 문장 투입: "${sentence}"`,
               );
               speechPipeline.enqueueSentence(sentence);
             },
           });
+          const llmElapsedMs = Date.now() - llmStartMs;
 
           if (!aiReply) {
             console.warn(
@@ -2914,7 +2959,34 @@ export const setupVoiceChatListener = (params: {
             textChannelId: session.textChannel?.id || null,
           }).catch(() => {});
 
-          await speechPipeline.finish();
+          const ttsStats = await speechPipeline.finish();
+          const totalTurnMs = Date.now() - sttStartMs;
+          const llmTtfaMs =
+            firstSentenceAtMs !== null ? firstSentenceAtMs - llmStartMs : null;
+          const perceivedLatencyMs =
+            ttsStats.firstPlaybackAtMs !== null
+              ? ttsStats.firstPlaybackAtMs - sttStartMs
+              : null;
+          const sttSummary = getSttConfigSummary();
+          const llmModel = await getUserModel(userName).catch(() => "ollama");
+
+          logVoicePipelineTiming({
+            userName,
+            audioDurationSec: durationSec,
+            transcribedText,
+            sttMs: sttElapsedMs,
+            sttLabel: `${sttSummary.provider}:${sttSummary.model.split("/").pop()?.split(" ")[0] || sttSummary.model}`,
+            llmMs: llmElapsedMs,
+            llmTtfaMs,
+            llmModel,
+            ttsTotalMs: ttsStats.totalMs,
+            ttsSynthMs: ttsStats.totalSynthMs,
+            ttsPlayMs: ttsStats.totalPlayMs,
+            ttsSentenceCount: ttsStats.sentenceCount,
+            ttsPreset: ttsStats.presetId,
+            perceivedLatencyMs,
+            totalTurnMs,
+          });
         })
         .catch((err) => {
           console.error("[VoiceChat] 음성 대화 처리 중 오류 발생:", err);

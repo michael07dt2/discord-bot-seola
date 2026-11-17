@@ -527,7 +527,7 @@ const streamCompletionWithSentences = async (
   flushCompleteSentences(true);
   const finalReply = rawContent.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
   console.log(
-    `[LLM:Stream] ✅ LLM 응답 생성 완료 (${Date.now() - startTime}ms, 방출 문장수: ${emittedSentenceCount}, 길이: ${finalReply.length}자)`,
+    `[LLM:Stream] ✅ 응답 생성 완료 (${model}, ${Date.now() - startTime}ms, TTFA: ${firstChunkMs ?? 0}ms, ${emittedSentenceCount}문장, ${finalReply.length}자)`,
   );
   return finalReply;
 };
@@ -583,7 +583,7 @@ const fetchOllamaChat = async (params: {
     let content = data?.message?.content || "";
     content = content.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
     console.log(
-      `[Ollama] ⚡ /api/chat 응답 생성 완료 (${Date.now() - t0}ms, 길이: ${content.length}자)`,
+      `[Ollama] ⚡ /api/chat 응답 생성 완료 (${params.model}, ${Date.now() - t0}ms, ${content.length}자)`,
     );
     return content || null;
   } catch (err: any) {

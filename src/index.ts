@@ -1,3 +1,6 @@
+import { installColorConsole } from "./util/logger.ts";
+installColorConsole();
+
 import express from "express";
 import { Client, Events, GatewayIntentBits, Partials } from "discord.js";
 
