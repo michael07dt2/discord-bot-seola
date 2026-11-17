@@ -110,6 +110,7 @@ export const CONFIG = {
   COSYVOICE_PROMPT_WAV:
     process.env.COSYVOICE_PROMPT_WAV || "asset/zero_shot_prompt.wav",
   COSYVOICE_INSTRUCT_TEXT: process.env.COSYVOICE_INSTRUCT_TEXT || "",
+  COSYVOICE_STREAM: parseBoolEnv(process.env.COSYVOICE_STREAM, true),
   COSYVOICE_TIMEOUT_MS: parseInt(
     process.env.COSYVOICE_TIMEOUT_MS || "180000",
     10,

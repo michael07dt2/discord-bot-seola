@@ -2192,14 +2192,18 @@ export const createSentenceSpeechPipeline = (
   connection: VoiceConnection,
   player: AudioPlayer,
   guildId: string,
-  options?: { maxSentences?: number },
+  options?: { maxSentences?: number; splitSentences?: boolean },
 ) => {
   const pipelineStartMs = Date.now();
+  const isCosyVoicePreset = getCurrentVoicePreset().engine === "cosyvoice";
+  const shouldSplit = options?.splitSentences ?? !isCosyVoicePreset;
   // 고부하 신경망 TTS(CosyVoice)의 병렬 폭주 및 소켓 타임아웃을 방지하기 위해 작업 함수 큐로 순차 처리
   const synthesisQueue: (() => Promise<SynthesizedSpeechResource | null>)[] =
     [];
-  // 음성 통화 환경에 맞춰 발화 문장을 최대 3문장으로 제한 (과도하게 긴 대답 및 무한 루프 발화 방지)
-  const maxSentences = options?.maxSentences ?? 3;
+  // CosyVoice 프리셋은 대화를 자르지 않고 전체 발화, 일반 스트리밍 엔진은 최대 3문장으로 제한
+  const maxSentences = shouldSplit
+    ? (options?.maxSentences ?? 3)
+    : Number.POSITIVE_INFINITY;
   let enqueuedSentenceCount = 0;
   let synthesizedCount = 0;
   let totalSynthMs = 0;
@@ -2303,6 +2307,19 @@ export const createSentenceSpeechPipeline = (
 
     const cleaned = cleanTextForTTS(rawSentence);
     if (!cleaned) return;
+
+    // CosyVoice 등 분할 비활성화 모드에서는 대화를 자르지 않고 전체 텍스트를 한 번에 전송
+    if (!shouldSplit) {
+      enqueuedSentenceCount++;
+      const synthTask = () =>
+        synthesizeSpeechResource(cleaned).catch((err) => {
+          console.error("[VoiceChat] 문장 합성 오류:", err);
+          return null;
+        });
+      synthesisQueue.push(synthTask);
+      notifyQueueUpdated();
+      return;
+    }
 
     // 한 번에 여러 문장이 들어온 경우에도 문장 단위로 쪼갠 뒤 너무 짧은 문장은 결합하여 합성 큐에 등록
     const rawSubSentences = splitTextIntoSentences(cleaned);
@@ -2905,12 +2922,15 @@ export const setupVoiceChatListener = (params: {
 
           const llmStartMs = Date.now();
           let firstSentenceAtMs: number | null = null;
+          const useWholeReplyTts = getCurrentVoicePreset().engine === "cosyvoice";
 
           const speechPipeline = createSentenceSpeechPipeline(
             connection,
             player,
             guildId,
-            { maxSentences: 3 },
+            useWholeReplyTts
+              ? { splitSentences: false }
+              : { maxSentences: 3 },
           );
 
           const aiReply = await generateAIResponse(userName, promptText, {
@@ -2918,15 +2938,19 @@ export const setupVoiceChatListener = (params: {
             isMultiPersonVoice: isMultiPersonChannel,
             humanMemberCount,
             channel: session.textChannel,
-            onSentence: (sentence) => {
-              if (firstSentenceAtMs === null) {
-                firstSentenceAtMs = Date.now();
-              }
-              console.log(
-                `[VoiceChat:Debug] 🔊 TTS 파이프라인 문장 투입: "${sentence}"`,
-              );
-              speechPipeline.enqueueSentence(sentence);
-            },
+            ...(useWholeReplyTts
+              ? {}
+              : {
+                  onSentence: (sentence) => {
+                    if (firstSentenceAtMs === null) {
+                      firstSentenceAtMs = Date.now();
+                    }
+                    console.log(
+                      `[VoiceChat:Debug] 🔊 TTS 파이프라인 문장 투입: "${sentence}"`,
+                    );
+                    speechPipeline.enqueueSentence(sentence);
+                  },
+                }),
           });
           const llmElapsedMs = Date.now() - llmStartMs;
 
@@ -2936,6 +2960,13 @@ export const setupVoiceChatListener = (params: {
             );
             await speechPipeline.finish();
             return;
+          }
+
+          if (useWholeReplyTts) {
+            console.log(
+              `[VoiceChat:Debug] 🔊 CosyVoice 전체 발화 투입 (자르지 않음): "${aiReply}"`,
+            );
+            speechPipeline.enqueueSentence(aiReply);
           }
 
           console.log(`[VoiceChat] 💬 설아 -> ${userName}: ${aiReply}`);

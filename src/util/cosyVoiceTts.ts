@@ -19,6 +19,7 @@ export interface CosyVoiceOptions {
   sftSpeaker?: string | undefined;
   speed?: number | undefined;
   seed?: number | undefined;
+  stream?: boolean | undefined;
   timeoutMs?: number | undefined;
 }
 
@@ -241,6 +242,7 @@ const synthesizeCosyVoiceWithBaseUrl = async (
       : "";
   const speed = options?.speed ?? 1.0;
   const seed = options?.seed ?? 0;
+  const stream = options?.stream ?? CONFIG.COSYVOICE_STREAM;
   const timeoutMs = options?.timeoutMs ?? CONFIG.COSYVOICE_TIMEOUT_MS;
   const startTime = Date.now();
 
@@ -252,7 +254,7 @@ const synthesizeCosyVoiceWithBaseUrl = async (
     ? ` [지시: "${instructText.length > 15 ? instructText.slice(0, 15) + "..." : instructText}"]`
     : "";
   console.log(
-    `[CosyVoice] 🎙️ 음성 합성 시작: "${displayExcerpt}" (서버: ${baseUrl}, 모드: ${mode}${instructExcerpt}, 제한시간: ${timeoutMs / 1000}초)`,
+    `[CosyVoice] 🎙️ 음성 합성 시작: "${displayExcerpt}" (서버: ${baseUrl}, 모드: ${mode}, stream: ${stream}${instructExcerpt}, 제한시간: ${timeoutMs / 1000}초)`,
   );
 
   try {
@@ -276,7 +278,7 @@ const synthesizeCosyVoiceWithBaseUrl = async (
           null, // 마이크 직접 녹음 파일
           instructText,
           seed,
-          false, // stream 여부 (비스트리밍 일괄 생성으로 안정성 확보)
+          stream, // stream 여부
           speed,
         ],
       }),
@@ -364,31 +366,58 @@ const synthesizeCosyVoiceWithBaseUrl = async (
       throw new Error("CosyVoice로부터 유효한 오디오 메타데이터를 받지 못했습니다.");
     }
 
-    // 3. 오디오 실제 URL 결정 (HLS playlist.m3u8 또는 단일 파일)
-    let audioUrl = `${baseUrl}/gradio_api/stream/${finalAudioMeta.path}`;
+    // 3. 오디오 실제 URL 결정 및 다운로드 (HLS playlist.m3u8 다중 세그먼트 또는 단일 파일)
+    let audioBuffer: Buffer;
+    const baseAudioUrl = `${baseUrl}/gradio_api/stream/${finalAudioMeta.path}`;
 
     if (finalAudioMeta.path.endsWith(".m3u8")) {
-      const m3u8Res = await fetch(audioUrl, { signal: controller.signal });
+      const m3u8Res = await fetch(baseAudioUrl, { signal: controller.signal });
       if (!m3u8Res.ok) {
         throw new Error(`CosyVoice m3u8 플레이리스트 수신 실패: ${m3u8Res.status}`);
       }
       const m3u8Text = await m3u8Res.text();
-      // m3u8 내부의 세그먼트 파일 (.aac, .ts, .wav 등) 추출
-      const match = m3u8Text.match(/([^\s\r\n]+\.(?:aac|mp3|wav|ts))/);
-      if (!match || !match[1]) {
+      const segmentMatches = Array.from(
+        m3u8Text.matchAll(/([^\s\r\n]+\.(?:aac|mp3|wav|ts))/g),
+      )
+        .map((m) => m[1])
+        .filter((s): s is string => Boolean(s));
+
+      if (segmentMatches.length === 0) {
         throw new Error("m3u8 플레이리스트에서 오디오 세그먼트를 찾을 수 없습니다.");
       }
-      const segmentFile = match[1];
-      audioUrl = new URL(segmentFile, audioUrl).toString();
+
+      const segmentBuffers: Buffer[] = [];
+      for (const segmentFile of segmentMatches) {
+        const segUrl = new URL(segmentFile, baseAudioUrl).toString();
+        const segRes = await fetch(segUrl, { signal: controller.signal });
+        if (!segRes.ok || !segRes.body) {
+          throw new Error(`CosyVoice 세그먼트 다운로드 실패 (${segRes.status}): ${segmentFile}`);
+        }
+        segmentBuffers.push(Buffer.from(await segRes.arrayBuffer()));
+      }
+
+      if (segmentBuffers.length === 1) {
+        audioBuffer = segmentBuffers[0]!;
+      } else if (segmentMatches[0]!.endsWith(".wav")) {
+        // 여러 개의 WAV 세그먼트인 경우 첫 헤더 이후 PCM 데이터만 이어붙이고 헤더 크기를 갱신
+        const firstBuf = segmentBuffers[0]!;
+        const pcmParts = [firstBuf, ...segmentBuffers.slice(1).map((b) => b.subarray(44))];
+        audioBuffer = Buffer.concat(pcmParts);
+        if (audioBuffer.length >= 44) {
+          audioBuffer.writeUInt32LE(audioBuffer.length - 8, 4);
+          audioBuffer.writeUInt32LE(audioBuffer.length - 44, 40);
+        }
+      } else {
+        audioBuffer = Buffer.concat(segmentBuffers);
+      }
+    } else {
+      const audioRes = await fetch(baseAudioUrl, { signal: controller.signal });
+      if (!audioRes.ok || !audioRes.body) {
+        throw new Error(`CosyVoice 최종 오디오 다운로드 실패 (${audioRes.status})`);
+      }
+      audioBuffer = Buffer.from(await audioRes.arrayBuffer());
     }
 
-    // 4. 오디오 바이너리 스트림 수신 및 PassThrough 변환
-    const audioRes = await fetch(audioUrl, { signal: controller.signal });
-    if (!audioRes.ok || !audioRes.body) {
-      throw new Error(`CosyVoice 최종 오디오 다운로드 실패 (${audioRes.status})`);
-    }
-
-    const audioBuffer = Buffer.from(await audioRes.arrayBuffer());
     const passThrough = new PassThrough();
     passThrough.end(audioBuffer);
 
