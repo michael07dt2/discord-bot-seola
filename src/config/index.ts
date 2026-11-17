@@ -54,11 +54,11 @@ export const CONFIG = {
   WHISPER_MODEL:
     process.env.WHISPER_MODEL ||
     process.env.STT_MODEL ||
-    "onnx-community/whisper-large-v3-turbo",
+    "onnx-community/whisper-small",
   WHISPER_FALLBACK_MODEL:
-    process.env.WHISPER_FALLBACK_MODEL || "onnx-community/whisper-small",
+    process.env.WHISPER_FALLBACK_MODEL || "onnx-community/whisper-base",
   STT_LANGUAGE: (process.env.STT_LANGUAGE || "ko").trim(),
-  STT_ENCODER_DTYPE: (process.env.STT_ENCODER_DTYPE || "q8").trim() as WhisperDtype,
+  STT_ENCODER_DTYPE: (process.env.STT_ENCODER_DTYPE || "fp32").trim() as WhisperDtype,
   STT_DECODER_DTYPE: (process.env.STT_DECODER_DTYPE || "q8").trim() as WhisperDtype,
   STT_NUM_BEAMS: parseIntEnv(process.env.STT_NUM_BEAMS, 1),
   STT_TEMPERATURE: parseFloatEnv(process.env.STT_TEMPERATURE, 0.0),

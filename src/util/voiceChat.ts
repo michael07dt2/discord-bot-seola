@@ -2969,13 +2969,15 @@ export const setupVoiceChatListener = (params: {
               : null;
           const sttSummary = getSttConfigSummary();
           const llmModel = await getUserModel(userName).catch(() => "ollama");
+          const cleanSttModel =
+            sttSummary.model.split(" ")[0]?.split("/").pop() || sttSummary.model;
 
           logVoicePipelineTiming({
             userName,
             audioDurationSec: durationSec,
             transcribedText,
             sttMs: sttElapsedMs,
-            sttLabel: `${sttSummary.provider}:${sttSummary.model.split("/").pop()?.split(" ")[0] || sttSummary.model}`,
+            sttLabel: `${sttSummary.provider}:${cleanSttModel}`,
             llmMs: llmElapsedMs,
             llmTtfaMs,
             llmModel,
