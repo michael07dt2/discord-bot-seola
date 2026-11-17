@@ -18,6 +18,7 @@ import {
 import {
   pipeline,
   type AutomaticSpeechRecognitionPipeline,
+  type DataType,
 } from "@huggingface/transformers";
 import CONFIG from "../config/index.ts";
 import { MsEdgeTTS, OUTPUT_FORMAT } from "msedge-tts";
@@ -70,17 +71,71 @@ import { synthesizeQwenSentence, isQwenTtsAvailable } from "./qwenTts.ts";
 
 const { OpusEncoder } = opus;
 
-// Whisper 로컬 STT 모델 (기본값: 한국어 음성 인식률이 대폭 향상된 whisper-small)
-const WHISPER_MODEL = CONFIG.WHISPER_MODEL;
-const FALLBACK_WHISPER_MODEL = "onnx-community/whisper-base";
-
 // Whisper 입력 샘플링 레이트 (16kHz Mono)
 const SAMPLE_RATE = 16000;
-// 최소/최대 발화 길이 (초) 및 최소 음량(RMS)/피크 임계치
-const MIN_SPEECH_SECONDS = 0.35;
-const MAX_SPEECH_SECONDS = 30.0;
-const MIN_RMS_THRESHOLD = 0.005;
-const MIN_PEAK_THRESHOLD = 0.02;
+
+/**
+ * ============================================================================
+ * 🎙️ STT(음성 인식) & VAD(음성 감지) 핵심 튜닝 파라미터 (코드 상단 또는 .env에서 직접 제어)
+ * ============================================================================
+ */
+export const STT_CONFIG = {
+  /** STT 엔진 제공자 ("local" | "deepgram" | "openai" | "groq" | "auto") */
+  provider: CONFIG.STT_PROVIDER,
+  /** 로컬 Whisper ONNX 모델 ID (권장: onnx-community/whisper-large-v3-turbo) */
+  whisperModel: CONFIG.WHISPER_MODEL,
+  /** 기본 모델 로드 실패 시 폴백 모델 */
+  whisperFallbackModel: CONFIG.WHISPER_FALLBACK_MODEL,
+  /** 음성 인식 언어 코드 ("ko", "en", "ja", "zh", "auto" 등) */
+  language: CONFIG.STT_LANGUAGE,
+  /** 인코더 정밀도 ("fp32" 권장: 멜-스펙트로그램 음향 특징 손실 최소화) */
+  encoderDtype: CONFIG.STT_ENCODER_DTYPE,
+  /** 디코더 정밀도 ("q8" 권장: 고속 추론) */
+  decoderDtype: CONFIG.STT_DECODER_DTYPE,
+  /** 빔 서치 너비 (1=Greedy 고속, 2~3=정확도 우선) */
+  numBeams: CONFIG.STT_NUM_BEAMS,
+  /** 샘플링 온도 (0.0=결정론적) */
+  temperature: CONFIG.STT_TEMPERATURE,
+  /** 초기 문맥 힌트 프롬프트 (OpenAI/Groq Whisper API 등 지원 백엔드에서 활용) */
+  initialPrompt: CONFIG.STT_INITIAL_PROMPT,
+
+  // ─── VAD (음성 감지) 및 감도(Threshold) ───
+  /** 발화 종료로 간주할 침묵 대기 시간 (ms) */
+  silenceDurationMs: CONFIG.STT_SILENCE_DURATION_MS,
+  /** 최소 발화 길이 (초) — 이보다 짧은 클릭/잡음 무시 */
+  minSpeechSeconds: CONFIG.STT_MIN_SPEECH_SECONDS,
+  /** 최대 발화 버퍼 길이 (초) */
+  maxSpeechSeconds: CONFIG.STT_MAX_SPEECH_SECONDS,
+  /** 발화 전체 최소 평균 음량(RMS) 임계치 (낮출수록 작은 목소리에 민감) */
+  minRmsThreshold: CONFIG.STT_MIN_RMS_THRESHOLD,
+  /** 발화 전체 최소 최대 진폭(Peak) 임계치 (낮출수록 작은 목소리에 민감) */
+  minPeakThreshold: CONFIG.STT_MIN_PEAK_THRESHOLD,
+  /** 프레임 VAD 동적 에너지 비율 (대표 음성 에너지 * 비율) */
+  vadEnergyRatio: CONFIG.STT_VAD_ENERGY_RATIO,
+  /** 프레임 VAD 최소 RMS 하한선 */
+  vadMinFrameRms: CONFIG.STT_VAD_MIN_FRAME_RMS,
+
+  // ─── 노이즈 필터링 & 음질 보정(AGC) ───
+  /** 적응형 소프트 노이즈 게이트 활성화 여부 */
+  noiseGateEnabled: CONFIG.STT_NOISE_GATE_ENABLED,
+  /** 저주파 험/팝 노이즈 차단 하이패스 필터 차단 주파수 (Hz) */
+  highpassCutoffHz: CONFIG.STT_HIGHPASS_CUTOFF_HZ,
+  /** 고주파 히스 노이즈 차단 로우패스 필터 차단 주파수 (Hz) */
+  lowpassCutoffHz: CONFIG.STT_LOWPASS_CUTOFF_HZ,
+  /** 한국어 초성/자음 선명도 향상을 위한 프리엠퍼시스 계수 (0.0 ~ 0.5) */
+  preEmphasisCoeff: CONFIG.STT_PRE_EMPHASIS_COEFF,
+  /** 자동 이득 제어(AGC) 목표 정규화 피크 */
+  agcTargetPeak: CONFIG.STT_AGC_TARGET_PEAK,
+  /** 자동 이득 제어(AGC) 최대 증폭 배수 */
+  agcMaxGain: CONFIG.STT_AGC_MAX_GAIN,
+
+  // ─── 외부 고성능 STT API 옵션 ───
+  deepgramApiKey: CONFIG.DEEPGRAM_API_KEY,
+  deepgramModel: CONFIG.DEEPGRAM_MODEL,
+  apiUrl: CONFIG.STT_API_URL,
+  apiKey: CONFIG.STT_API_KEY,
+  apiModel: CONFIG.STT_API_MODEL,
+} as const;
 
 // TTS 목소리 프리셋 정의 (기본 엔진: 로컬 한국어 전용 신경망 모델 MeloTTS-Korean 및 CosyVoice/Qwen3-TTS)
 export interface VoicePreset {
@@ -684,68 +739,165 @@ export const notifyVoiceDashboardStatusChanged = (): void => {
   }
 };
 
+const resolveWhisperLanguage = (code: string): string | undefined => {
+  const normalized = code.trim().toLowerCase();
+  if (!normalized || normalized === "auto") return undefined;
+  const map: Record<string, string> = {
+    ko: "korean",
+    kr: "korean",
+    korean: "korean",
+    en: "english",
+    us: "english",
+    english: "english",
+    ja: "japanese",
+    jp: "japanese",
+    japanese: "japanese",
+    zh: "chinese",
+    cn: "chinese",
+    chinese: "chinese",
+  };
+  return map[normalized] || normalized;
+};
+
+const resolveIsoLanguage = (code: string): string | undefined => {
+  const normalized = code.trim().toLowerCase();
+  if (!normalized || normalized === "auto") return undefined;
+  const map: Record<string, string> = {
+    korean: "ko",
+    ko: "ko",
+    kr: "ko",
+    english: "en",
+    en: "en",
+    us: "en",
+    japanese: "ja",
+    ja: "ja",
+    jp: "ja",
+    chinese: "zh",
+    zh: "zh",
+    cn: "zh",
+  };
+  return map[normalized] || normalized.slice(0, 2);
+};
+
+const resolveActiveSttProvider = (): "local" | "deepgram" | "openai" => {
+  if (STT_CONFIG.provider === "deepgram" && STT_CONFIG.deepgramApiKey) {
+    return "deepgram";
+  }
+  if (
+    (STT_CONFIG.provider === "openai" || STT_CONFIG.provider === "groq") &&
+    STT_CONFIG.apiKey
+  ) {
+    return "openai";
+  }
+  if (STT_CONFIG.provider === "auto") {
+    if (STT_CONFIG.deepgramApiKey) return "deepgram";
+    if (STT_CONFIG.apiKey) return "openai";
+  }
+  return "local";
+};
+
+export const getSttConfigSummary = (): {
+  provider: "local" | "deepgram" | "openai";
+  model: string;
+  language: string;
+  silenceDurationMs: number;
+  minRmsThreshold: number;
+  minPeakThreshold: number;
+  vadEnergyRatio: number;
+} => {
+  const activeProvider = resolveActiveSttProvider();
+  const model =
+    activeProvider === "deepgram"
+      ? `deepgram/${STT_CONFIG.deepgramModel}`
+      : activeProvider === "openai"
+        ? STT_CONFIG.apiModel
+        : `${STT_CONFIG.whisperModel} (enc:${STT_CONFIG.encoderDtype}/dec:${STT_CONFIG.decoderDtype})`;
+  return {
+    provider: activeProvider,
+    model,
+    language: STT_CONFIG.language,
+    silenceDurationMs: STT_CONFIG.silenceDurationMs,
+    minRmsThreshold: STT_CONFIG.minRmsThreshold,
+    minPeakThreshold: STT_CONFIG.minPeakThreshold,
+    vadEnergyRatio: STT_CONFIG.vadEnergyRatio,
+  };
+};
+
+type AsrPipelineLoader = (
+  task: "automatic-speech-recognition",
+  model: string,
+  options: { dtype?: DataType | Record<string, DataType> },
+) => Promise<AutomaticSpeechRecognitionPipeline>;
+
+const loadWhisperModelWithRetry = async (
+  loadAsr: AsrPipelineLoader,
+  modelId: string,
+): Promise<AutomaticSpeechRecognitionPipeline> => {
+  const hybridDtype: Record<string, DataType> = {
+    encoder_model: STT_CONFIG.encoderDtype as DataType,
+    decoder_model_merged: STT_CONFIG.decoderDtype as DataType,
+  };
+  try {
+    return await loadAsr("automatic-speech-recognition", modelId, {
+      dtype: hybridDtype,
+    });
+  } catch (hybridErr) {
+    console.warn(
+      `[VoiceChat] ${modelId} 하이브리드 정밀도(enc:${STT_CONFIG.encoderDtype}/dec:${STT_CONFIG.decoderDtype}) 로드 실패, 단일 dtype(${STT_CONFIG.decoderDtype})으로 재시도:`,
+      hybridErr instanceof Error ? hybridErr.message : hybridErr,
+    );
+    return await loadAsr("automatic-speech-recognition", modelId, {
+      dtype: STT_CONFIG.decoderDtype as DataType,
+    });
+  }
+};
+
 /**
  * 로컬 Whisper STT 및 MeloTTS-Korean 파이프라인 싱글톤 사전 로드
- * - 기본 모델(`onnx-community/whisper-small`) 로드 실패 시 `whisper-base`로 자동 폴백
+ * - 기본 모델(`onnx-community/whisper-large-v3-turbo`) 로드 실패 시 폴백 모델로 자동 전환
  */
-export const preloadWhisperModel =
-  async (): Promise<AutomaticSpeechRecognitionPipeline> => {
-    // MeloTTS-Korean 로컬 모델도 함께 워밍업
-    preloadMeloTTSModel().catch(() => {});
+export const preloadWhisperModel = async (): Promise<AutomaticSpeechRecognitionPipeline> => {
+  // MeloTTS-Korean 로컬 모델도 함께 워밍업
+  preloadMeloTTSModel().catch(() => {});
 
-    if (!transcriberPromise) {
-      const loadAsr = pipeline as unknown as (
-        task: "automatic-speech-recognition",
-        model: string,
-        options: { dtype: "q8" | "fp32" },
-      ) => Promise<AutomaticSpeechRecognitionPipeline>;
+  if (!transcriberPromise) {
+    const loadAsr = pipeline as unknown as AsrPipelineLoader;
+    const candidates = Array.from(
+      new Set([
+        STT_CONFIG.whisperModel,
+        STT_CONFIG.whisperFallbackModel,
+        "onnx-community/whisper-base",
+      ]),
+    ).filter(Boolean);
 
-      console.log(
-        `[VoiceChat] 로컬 Whisper STT 모델 로드 중... (${WHISPER_MODEL})`,
-      );
-      transcriberPromise = loadAsr(
-        "automatic-speech-recognition",
-        WHISPER_MODEL,
-        { dtype: "q8" },
-      )
-        .then((instance) => {
+    transcriberPromise = (async () => {
+      let lastError: unknown;
+      for (let i = 0; i < candidates.length; i++) {
+        const modelId = candidates[i]!;
+        try {
           console.log(
-            `[VoiceChat] Whisper STT 모델 준비 완료 (${WHISPER_MODEL})`,
+            `[VoiceChat] 로컬 Whisper STT 모델 로드 중... (${modelId}, enc=${STT_CONFIG.encoderDtype}, dec=${STT_CONFIG.decoderDtype})`,
           );
+          const instance = await loadWhisperModelWithRetry(loadAsr, modelId);
+          console.log(`[VoiceChat] Whisper STT 모델 준비 완료 (${modelId})`);
           return instance;
-        })
-        .catch(async (err) => {
-          if (WHISPER_MODEL !== FALLBACK_WHISPER_MODEL) {
+        } catch (err) {
+          lastError = err;
+          if (i < candidates.length - 1) {
             console.warn(
-              `[VoiceChat] ${WHISPER_MODEL} 로드 실패, 폴백 모델(${FALLBACK_WHISPER_MODEL})로 재시도합니다:`,
+              `[VoiceChat] ${modelId} 로드 실패, 다음 폴백 모델(${candidates[i + 1]})로 재시도합니다:`,
               err,
             );
-            try {
-              const fallbackInstance = await loadAsr(
-                "automatic-speech-recognition",
-                FALLBACK_WHISPER_MODEL,
-                { dtype: "q8" },
-              );
-              console.log(
-                `[VoiceChat] Whisper STT 폴백 모델 준비 완료 (${FALLBACK_WHISPER_MODEL})`,
-              );
-              return fallbackInstance;
-            } catch (fallbackErr) {
-              transcriberPromise = null;
-              console.error(
-                "[VoiceChat] Whisper STT 폴백 모델 로드 실패:",
-                fallbackErr,
-              );
-              throw fallbackErr;
-            }
           }
-          transcriberPromise = null;
-          console.error("[VoiceChat] Whisper STT 모델 로드 실패:", err);
-          throw err;
-        });
-    }
-    return transcriberPromise;
-  };
+        }
+      }
+      transcriberPromise = null;
+      console.error("[VoiceChat] 모든 Whisper STT 모델 로드 실패:", lastError);
+      throw lastError;
+    })();
+  }
+  return transcriberPromise;
+};
 
 /**
  * 현재 플레이어 상태를 외부(음원 재생 등)에서 동기화하기 위한 헬퍼
@@ -1030,10 +1182,11 @@ export const removeVoiceChatSession = (guildId: string): void => {
 };
 
 /**
- * 16-bit Signed Little-Endian PCM 버퍼를 Whisper 입력에 최적화된 Float32Array(-1.0 ~ 1.0)로 전처리
- * - 1) DC 오프셋 제거 및 1차 하이패스 필터(HPF ~80Hz)로 마이크 험/저주파 진동 노이즈 제거
- * - 2) 프레임(20ms) 에너지 기반 앞뒤 무음 트리밍(Silence Trimming) 후 Whisper 인식 최적 여백(전면 80ms, 후면 240ms) 패딩
- * - 3) 자동 이득 제어(AGC / Peak Normalization)로 작은 목소리도 목표 피크(0.85, 최대 증폭 5.0x)까지 선명하게 보정
+ * 16-bit Signed Little-Endian PCM 버퍼를 Whisper/STT 입력에 최적화된 Float32Array(-1.0 ~ 1.0)로 전처리
+ * - 1) DC 오프셋 제거 + Band-Pass 필터(HPF & LPF)로 마이크 험/팝/고주파 히스 노이즈 차단
+ * - 2) 20ms 프레임별 RMS & 영교차율(ZCR) 분석으로 배경 노이즈 플로어를 추정하고 초성 자음('ㅅ', 'ㅎ' 등) 손실 없는 VAD 트리밍
+ * - 3) 적응형 소프트 노이즈 게이트 + 한국어 자음 변별력 보강 프리엠퍼시스 적용
+ * - 4) 백분위수 기반 AGC + Soft-Knee 리미터로 클리핑 없이 음량을 최적화하고 앞/뒤 무음 패딩 추가
  */
 const pcm16ToFloat32 = (
   pcmBuffer: Buffer,
@@ -1053,59 +1206,106 @@ const pcm16ToFloat32 = (
     };
   }
 
-  const rawSamples = new Float32Array(sampleCount);
+  // 1. Int16 -> Float32 변환 및 DC 오프셋 제거
+  const dcRemoved = new Float32Array(sampleCount);
+  let dcSum = 0;
+  for (let i = 0; i < sampleCount; i++) {
+    const v = pcmBuffer.readInt16LE(i * 2) / 32768.0;
+    dcRemoved[i] = v;
+    dcSum += v;
+  }
+  const dcOffset = dcSum / sampleCount;
 
-  // 1. Int16 -> Float32 변환 및 1차 하이패스 필터 (y[n] = alpha * (y[n-1] + x[n] - x[n-1]), alpha ≈ 0.969 @ 16kHz -> ~80Hz cutoff)
-  const hpfAlpha = 0.969;
-  let prevX = 0;
-  let prevY = 0;
+  // 1차 하이패스 필터(HPF) 및 1차 로우패스 필터(LPF) 계수 계산
+  const hpCutoff = STT_CONFIG.highpassCutoffHz;
+  const hpfAlpha =
+    hpCutoff > 0
+      ? 1.0 / (1.0 + (2.0 * Math.PI * hpCutoff) / SAMPLE_RATE)
+      : 1.0;
+
+  const lpCutoff = STT_CONFIG.lowpassCutoffHz;
+  const useLpf = lpCutoff > 0 && lpCutoff < SAMPLE_RATE / 2;
+  const lpfAlpha = useLpf
+    ? (2.0 * Math.PI * lpCutoff) /
+      SAMPLE_RATE /
+      (1.0 + (2.0 * Math.PI * lpCutoff) / SAMPLE_RATE)
+    : 1.0;
+
+  const rawSamples = new Float32Array(sampleCount);
+  let prevHpX = 0;
+  let prevHpY = 0;
+  let prevLpY = 0;
 
   for (let i = 0; i < sampleCount; i++) {
-    const x = pcmBuffer.readInt16LE(i * 2) / 32768.0;
-    const y = hpfAlpha * (prevY + x - prevX);
-    prevX = x;
-    prevY = y;
-    rawSamples[i] = Math.max(-1.0, Math.min(1.0, y));
+    const x = dcRemoved[i]! - dcOffset;
+    const hpY =
+      hpCutoff > 0 ? hpfAlpha * (prevHpY + x - prevHpX) : x;
+    prevHpX = x;
+    prevHpY = hpY;
+
+    const lpY = useLpf ? prevLpY + lpfAlpha * (hpY - prevLpY) : hpY;
+    prevLpY = lpY;
+    rawSamples[i] = Math.max(-1.0, Math.min(1.0, lpY));
   }
 
-  // 2. 20ms(320샘플) 프레임 단위 에너지 분석으로 앞뒤 무음 구간 트리밍
+  // 2. 20ms(320샘플) 프레임 단위 에너지(RMS) + 영교차율(ZCR) 분석
   const frameSize = 320;
   const numFrames = Math.ceil(sampleCount / frameSize);
   const frameRms = new Float32Array(numFrames);
-  let maxFrameRms = 0;
+  const frameZcr = new Float32Array(numFrames);
 
   for (let f = 0; f < numFrames; f++) {
     const start = f * frameSize;
     const end = Math.min(sampleCount, start + frameSize);
+    const len = Math.max(1, end - start);
     let sumSq = 0;
+    let zeroCrossings = 0;
+    let prevSample = rawSamples[start]!;
+
     for (let i = start; i < end; i++) {
       const v = rawSamples[i]!;
       sumSq += v * v;
+      if (i > start && ((prevSample >= 0 && v < 0) || (prevSample < 0 && v >= 0))) {
+        zeroCrossings++;
+      }
+      prevSample = v;
     }
-    const r = Math.sqrt(sumSq / Math.max(1, end - start));
-    frameRms[f] = r;
-    if (r > maxFrameRms) {
-      maxFrameRms = r;
-    }
+
+    frameRms[f] = Math.sqrt(sumSq / len);
+    frameZcr[f] = len > 1 ? zeroCrossings / (len - 1) : 0;
   }
 
-  // 동적 활성 발화 프레임 임계치 (배경 잡음 대비 실제 음성 시작/끝점 탐색)
+  // 하위 15% 백분위수로 배경 노이즈 플로어, 상위 90% 백분위수로 대표 음성 에너지 추정
+  const sortedRms = Array.from(frameRms).sort((a, b) => a - b);
+  const noiseFloorRms =
+    sortedRms[Math.floor((numFrames - 1) * 0.15)] ?? 0;
+  const speechRefRms =
+    sortedRms[Math.floor((numFrames - 1) * 0.9)] ?? 0;
+
   const activeFrameThreshold = Math.max(
-    0.004,
-    Math.min(0.025, maxFrameRms * 0.12),
+    STT_CONFIG.vadMinFrameRms,
+    noiseFloorRms * 1.8,
+    Math.min(0.02, speechRefRms * STT_CONFIG.vadEnergyRatio),
   );
+
+  const isSpeechFrame = (f: number): boolean => {
+    const r = frameRms[f]!;
+    const zcr = frameZcr[f]!;
+    return (
+      r >= activeFrameThreshold ||
+      (r >= activeFrameThreshold * 0.55 && zcr >= 0.14)
+    );
+  };
+
   let firstActiveFrame = 0;
   let lastActiveFrame = numFrames - 1;
 
-  while (
-    firstActiveFrame < numFrames &&
-    frameRms[firstActiveFrame]! < activeFrameThreshold
-  ) {
+  while (firstActiveFrame < numFrames && !isSpeechFrame(firstActiveFrame)) {
     firstActiveFrame++;
   }
   while (
     lastActiveFrame > firstActiveFrame &&
-    frameRms[lastActiveFrame]! < activeFrameThreshold
+    !isSpeechFrame(lastActiveFrame)
   ) {
     lastActiveFrame--;
   }
@@ -1120,18 +1320,39 @@ const pcm16ToFloat32 = (
     };
   }
 
-  // 앞쪽 3프레임(60ms), 뒤쪽 6프레임(120ms) 여유분 포함하여 슬라이스
-  const startSample = Math.max(0, (firstActiveFrame - 3) * frameSize);
-  const endSample = Math.min(sampleCount, (lastActiveFrame + 7) * frameSize);
+  // 앞쪽 8프레임(160ms), 뒤쪽 12프레임(240ms) 여유분 포함하여 초성/받침 보호
+  const startFrame = Math.max(0, firstActiveFrame - 8);
+  const endFrame = Math.min(numFrames - 1, lastActiveFrame + 12);
+  const startSample = startFrame * frameSize;
+  const endSample = Math.min(sampleCount, (endFrame + 1) * frameSize);
   const activeLength = Math.max(0, endSample - startSample);
 
-  // 트리밍된 실제 발화 구간의 RMS 및 Peak 측정
+  // 3. 적응형 소프트 노이즈 게이트 + 프리엠퍼시스 + RMS/Peak 측정
+  const processed = new Float32Array(activeLength);
+  const preCoeff = Math.max(0, Math.min(0.5, STT_CONFIG.preEmphasisCoeff));
+  let smoothedGateGain = 1.0;
+  let prevGated = 0;
   let sumSquares = 0;
   let peak = 0;
-  for (let i = startSample; i < endSample; i++) {
-    const v = rawSamples[i]!;
-    const absV = Math.abs(v);
-    sumSquares += v * v;
+
+  for (let i = 0; i < activeLength; i++) {
+    const absIdx = startSample + i;
+    const f = Math.min(numFrames - 1, Math.floor(absIdx / frameSize));
+    const targetGateGain =
+      STT_CONFIG.noiseGateEnabled &&
+      !isSpeechFrame(f) &&
+      frameRms[f]! < noiseFloorRms * 1.6
+        ? 0.3
+        : 1.0;
+    smoothedGateGain = smoothedGateGain * 0.92 + targetGateGain * 0.08;
+
+    const gated = rawSamples[absIdx]! * smoothedGateGain;
+    const preEmph = i === 0 ? gated : gated - preCoeff * prevGated;
+    prevGated = gated;
+
+    processed[i] = preEmph;
+    const absV = Math.abs(preEmph);
+    sumSquares += preEmph * preEmph;
     if (absV > peak) {
       peak = absV;
     }
@@ -1140,22 +1361,246 @@ const pcm16ToFloat32 = (
   const rms = activeLength > 0 ? Math.sqrt(sumSquares / activeLength) : 0;
   const durationSec = activeLength / SAMPLE_RATE;
 
-  // 3. 자동 이득 제어 (AGC): 작은 마이크 입력도 Whisper가 또렷하게 인식하도록 피크 0.85 기준으로 증폭 (최대 5배 제한으로 배경 백색소음 과증폭 방지)
-  const targetPeak = 0.85;
-  const gain =
-    peak > 0.01 ? Math.min(5.0, Math.max(1.0, targetPeak / peak)) : 1.0;
+  // 상위 98% 진폭 백분위수 기반 AGC로 단일 스파이크에 의한 증폭 저하 방지
+  const sampleStep = Math.max(1, Math.floor(activeLength / 4096));
+  const sampledAbs: number[] = [];
+  for (let i = 0; i < activeLength; i += sampleStep) {
+    sampledAbs.push(Math.abs(processed[i]!));
+  }
+  sampledAbs.sort((a, b) => a - b);
+  const p98 =
+    sampledAbs[Math.floor((sampledAbs.length - 1) * 0.98)] ?? peak;
+  const refAmp = Math.max(p98, peak * 0.5);
 
-  // 4. Whisper 디코더가 첫 음절과 끝 받침을 놓치지 않도록 앞 80ms, 뒤 240ms 무음 패딩 추가
-  const leadPad = Math.floor(SAMPLE_RATE * 0.08);
-  const trailPad = Math.floor(SAMPLE_RATE * 0.24);
+  // 4. 자동 이득 제어(AGC) + Soft-Knee 리미터 + Whisper 최적 무음 패딩 (앞 120ms, 뒤 280ms)
+  const gain =
+    refAmp > 0.008
+      ? Math.min(
+          STT_CONFIG.agcMaxGain,
+          Math.max(1.0, STT_CONFIG.agcTargetPeak / refAmp),
+        )
+      : 1.0;
+
+  const leadPad = Math.floor(SAMPLE_RATE * 0.12);
+  const trailPad = Math.floor(SAMPLE_RATE * 0.28);
   const paddedSamples = new Float32Array(leadPad + activeLength + trailPad);
 
   for (let i = 0; i < activeLength; i++) {
-    const amplified = rawSamples[startSample + i]! * gain;
-    paddedSamples[leadPad + i] = Math.max(-1.0, Math.min(1.0, amplified));
+    const amplified = processed[i]! * gain;
+    const absAmp = Math.abs(amplified);
+    // 0.85 초과 구간을 tanh로 부드럽게 압축하여 클리핑 왜곡 방지
+    const limited =
+      absAmp > 0.85
+        ? Math.sign(amplified) * (0.85 + 0.15 * Math.tanh((absAmp - 0.85) / 0.15))
+        : amplified;
+    paddedSamples[leadPad + i] = Math.max(-1.0, Math.min(1.0, limited));
   }
 
   return { samples: paddedSamples, rms, peak, durationSec };
+};
+
+/**
+ * Float32Array(16kHz Mono) 오디오를 16-bit PCM WAV Buffer로 변환 (외부 STT API 전송용)
+ */
+const float32ToWavBuffer = (
+  samples: Float32Array,
+  sampleRate: number = SAMPLE_RATE,
+): Buffer => {
+  const dataByteLength = samples.length * 2;
+  const wavBuffer = Buffer.allocUnsafe(44 + dataByteLength);
+
+  wavBuffer.write("RIFF", 0);
+  wavBuffer.writeUInt32LE(36 + dataByteLength, 4);
+  wavBuffer.write("WAVE", 8);
+  wavBuffer.write("fmt ", 12);
+  wavBuffer.writeUInt32LE(16, 16);
+  wavBuffer.writeUInt16LE(1, 20); // PCM
+  wavBuffer.writeUInt16LE(1, 22); // Mono
+  wavBuffer.writeUInt32LE(sampleRate, 24);
+  wavBuffer.writeUInt32LE(sampleRate * 2, 28);
+  wavBuffer.writeUInt16LE(2, 32);
+  wavBuffer.writeUInt16LE(16, 34);
+  wavBuffer.write("data", 36);
+  wavBuffer.writeUInt32LE(dataByteLength, 40);
+
+  let offset = 44;
+  for (let i = 0; i < samples.length; i++) {
+    const s = Math.max(-1, Math.min(1, samples[i]!));
+    const int16 = s < 0 ? Math.round(s * 32768) : Math.round(s * 32767);
+    wavBuffer.writeInt16LE(int16, offset);
+    offset += 2;
+  }
+
+  return wavBuffer;
+};
+
+/**
+ * Deepgram Nova-2 REST API를 이용한 초고정밀 음성 인식
+ */
+const transcribeWithDeepgram = async (
+  samples: Float32Array,
+): Promise<string> => {
+  const wavBuffer = float32ToWavBuffer(samples);
+  const params = new URLSearchParams({
+    model: STT_CONFIG.deepgramModel,
+    smart_format: "true",
+    punctuate: "true",
+  });
+  const isoLang = resolveIsoLanguage(STT_CONFIG.language);
+  if (isoLang) {
+    params.set("language", isoLang);
+  } else {
+    params.set("detect_language", "true");
+  }
+
+  const res = await fetch(
+    `https://api.deepgram.com/v1/listen?${params.toString()}`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Token ${STT_CONFIG.deepgramApiKey}`,
+        "Content-Type": "audio/wav",
+      },
+      body: new Uint8Array(wavBuffer),
+      signal: AbortSignal.timeout(15_000),
+    },
+  );
+
+  if (!res.ok) {
+    const errText = await res.text().catch(() => "");
+    throw new Error(`Deepgram API 오류 (${res.status}): ${errText}`);
+  }
+
+  const data = (await res.json()) as {
+    results?: {
+      channels?: Array<{
+        alternatives?: Array<{ transcript?: string }>;
+      }>;
+    };
+  };
+  return data.results?.channels?.[0]?.alternatives?.[0]?.transcript || "";
+};
+
+/**
+ * OpenAI / Groq 호환 Whisper large-v3 REST API를 이용한 음성 인식
+ */
+const transcribeWithOpenAiApi = async (
+  samples: Float32Array,
+): Promise<string> => {
+  const wavBuffer = float32ToWavBuffer(samples);
+  const baseUrl =
+    STT_CONFIG.apiUrl ||
+    (STT_CONFIG.provider === "groq"
+      ? "https://api.groq.com/openai/v1"
+      : "https://api.openai.com/v1");
+
+  const formData = new FormData();
+  formData.append(
+    "file",
+    new Blob([new Uint8Array(wavBuffer)], { type: "audio/wav" }),
+    "speech.wav",
+  );
+  formData.append("model", STT_CONFIG.apiModel);
+
+  const isoLang = resolveIsoLanguage(STT_CONFIG.language);
+  if (isoLang) {
+    formData.append("language", isoLang);
+  }
+  if (STT_CONFIG.initialPrompt) {
+    formData.append("prompt", STT_CONFIG.initialPrompt);
+  }
+
+  const res = await fetch(`${baseUrl}/audio/transcriptions`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${STT_CONFIG.apiKey}`,
+    },
+    body: formData,
+    signal: AbortSignal.timeout(15_000),
+  });
+
+  if (!res.ok) {
+    const errText = await res.text().catch(() => "");
+    throw new Error(`OpenAI/Groq STT API 오류 (${res.status}): ${errText}`);
+  }
+
+  const data = (await res.json()) as { text?: string };
+  return data.text || "";
+};
+
+/**
+ * 로컬 Whisper ONNX 파이프라인 추론
+ */
+const transcribeWithLocalWhisper = async (
+  samples: Float32Array,
+  durationSec: number,
+): Promise<string> => {
+  const transcriber = await preloadWhisperModel();
+  const whisperLang = resolveWhisperLanguage(STT_CONFIG.language);
+  const asrOptions: Record<string, unknown> = {
+    task: "transcribe",
+    ...(whisperLang ? { language: whisperLang } : {}),
+    // 20초 이상 긴 발화는 30초 슬라이딩 윈도우 청킹 활성화
+    ...(durationSec > 20 ? { chunk_length_s: 30, stride_length_s: 5 } : {}),
+    max_new_tokens: 160,
+    num_beams: STT_CONFIG.numBeams,
+    temperature: STT_CONFIG.temperature,
+    repetition_penalty: 1.05,
+    no_repeat_ngram_size: 4,
+  };
+
+  let result: { text: string } | { text: string }[];
+  try {
+    result = await (
+      transcriber as unknown as (
+        audio: Float32Array,
+        options: Record<string, unknown>,
+      ) => Promise<{ text: string } | { text: string }[]>
+    )(samples, asrOptions);
+  } catch (sttErr: any) {
+    // 무음/잡음 등으로 인한 빈 토큰 디코딩 예외는 안전하게 무시
+    if (sttErr?.message?.includes("token_ids")) {
+      return "";
+    }
+    throw sttErr;
+  }
+
+  return Array.isArray(result)
+    ? result.map((r) => r.text).join(" ")
+    : result.text;
+};
+
+/**
+ * 설정된 STT 공급자(Deepgram Nova-2 / OpenAI Whisper-large-v3 / 로컬 Whisper-large-v3-turbo)를 통해 음성 인식 실행
+ * - 외부 API 실패 시 로컬 Whisper로 자동 폴백
+ */
+export const transcribeAudioSamples = async (
+  samples: Float32Array,
+  durationSec: number,
+): Promise<string> => {
+  const activeProvider = resolveActiveSttProvider();
+
+  if (activeProvider === "deepgram") {
+    try {
+      return await transcribeWithDeepgram(samples);
+    } catch (err) {
+      console.warn(
+        "[VoiceChat] Deepgram STT 호출 실패, 로컬 Whisper로 폴백합니다:",
+        err instanceof Error ? err.message : err,
+      );
+    }
+  } else if (activeProvider === "openai") {
+    try {
+      return await transcribeWithOpenAiApi(samples);
+    } catch (err) {
+      console.warn(
+        "[VoiceChat] 외부 Whisper API 호출 실패, 로컬 Whisper로 폴백합니다:",
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
+
+  return await transcribeWithLocalWhisper(samples, durationSec);
 };
 
 /**
@@ -1985,8 +2430,12 @@ export const setupVoiceChatListener = (params: {
     guildSessions.delete(guildId);
   }
 
-  // 백그라운드에서 Whisper 모델 사전 로드 시작
-  preloadWhisperModel().catch(() => {});
+  // 백그라운드에서 Whisper STT 모델 사전 로드 (로컬 제공자인 경우에만 즉시 로드)
+  if (resolveActiveSttProvider() === "local") {
+    preloadWhisperModel().catch(() => {});
+  } else {
+    preloadMeloTTSModel().catch(() => {});
+  }
 
   // 오디오 플레이어 음성 연결에 구독
   connection.subscribe(player);
@@ -2041,18 +2490,34 @@ export const setupVoiceChatListener = (params: {
     const opusStream = connection.receiver.subscribe(userId, {
       end: {
         behavior: EndBehaviorType.AfterSilence,
-        duration: 750,
+        duration: STT_CONFIG.silenceDurationMs,
       },
     });
 
     const decoder = new OpusEncoder(SAMPLE_RATE, 1);
     const pcmChunks: Buffer[] = [];
     let totalBytes = 0;
-    const maxBytes = SAMPLE_RATE * 2 * MAX_SPEECH_SECONDS;
+    let lastPacketAt = 0;
+    const maxBytes = SAMPLE_RATE * 2 * STT_CONFIG.maxSpeechSeconds;
 
     opusStream.on("data", (opusPacket: Buffer) => {
       if (totalBytes >= maxBytes) return;
       try {
+        const now = Date.now();
+        if (lastPacketAt > 0) {
+          const gapMs = now - lastPacketAt;
+          if (gapMs > 60) {
+            const missingMs = Math.min(250, Math.max(0, gapMs - 20));
+            const silenceSamples = Math.floor((SAMPLE_RATE * missingMs) / 1000);
+            const silenceByteLen = silenceSamples * 2;
+            if (silenceByteLen > 0 && totalBytes + silenceByteLen < maxBytes) {
+              pcmChunks.push(Buffer.alloc(silenceByteLen));
+              totalBytes += silenceByteLen;
+            }
+          }
+        }
+        lastPacketAt = now;
+
         const decodedPcm = decoder.decode(opusPacket);
         pcmChunks.push(decodedPcm);
         totalBytes += decodedPcm.length;
@@ -2078,9 +2543,9 @@ export const setupVoiceChatListener = (params: {
 
       // 너무 짧은 잡음(클릭음, 숨소리)이거나 음량(RMS 및 Peak)이 너무 작으면 무시
       if (
-        durationSec < MIN_SPEECH_SECONDS ||
-        rms < MIN_RMS_THRESHOLD ||
-        peak < MIN_PEAK_THRESHOLD
+        durationSec < STT_CONFIG.minSpeechSeconds ||
+        rms < STT_CONFIG.minRmsThreshold ||
+        peak < STT_CONFIG.minPeakThreshold
       ) {
         console.log(
           `[VoiceChat:Debug] 🔇 미세 소음 무시: duration=${durationSec.toFixed(2)}s, rms=${rms.toFixed(4)}, peak=${peak.toFixed(3)}`,
@@ -2090,40 +2555,9 @@ export const setupVoiceChatListener = (params: {
 
       session.processingChain = session.processingChain
         .then(async () => {
-          const transcriber = await preloadWhisperModel();
           const sttStartMs = Date.now();
-          let result: { text: string } | { text: string }[];
-          try {
-            result = await (
-              transcriber as unknown as (
-                audio: Float32Array,
-                options: Record<string, unknown>,
-              ) => Promise<{ text: string } | { text: string }[]>
-            )(samples, {
-              language: "korean",
-              task: "transcribe",
-              // 25초 이상 긴 발화일 때만 청크 슬라이딩 윈도우를 활성화하고, 일반 대화는 단일 패스로 빠르게 디코딩
-              ...(durationSec > 25
-                ? { chunk_length_s: 30, stride_length_s: 5 }
-                : {}),
-              max_new_tokens: 128,
-              num_beams: 1,
-              temperature: 0.0,
-              repetition_penalty: 1.15,
-              no_repeat_ngram_size: 3,
-            });
-          } catch (sttErr: any) {
-            // 무음/잡음 등으로 인한 빈 토큰 디코딩 예외는 안전하게 무시
-            if (sttErr?.message?.includes("token_ids")) {
-              return;
-            }
-            throw sttErr;
-          }
+          const rawText = await transcribeAudioSamples(samples, durationSec);
           const sttElapsedMs = Date.now() - sttStartMs;
-
-          const rawText = Array.isArray(result)
-            ? result.map((r) => r.text).join(" ")
-            : result.text;
           const transcribedText = postProcessKoreanSttText(rawText);
 
           if (!isMeaningfulTranscription(transcribedText)) {

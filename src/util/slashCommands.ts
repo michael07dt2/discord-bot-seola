@@ -50,6 +50,7 @@ import {
 import {
   getActiveVoiceSessions,
   getCurrentVoicePreset,
+  getSttConfigSummary,
   removeVoiceChatSession,
   setGuildPlaybackMode,
   setVoiceChatEnabled,
@@ -889,17 +890,20 @@ export const handleSlashCommand = async (
 
       if (sub === "status") {
         const sessions = getActiveVoiceSessions();
+        const sttSummary = getSttConfigSummary();
         const currentSession = interaction.guildId
           ? sessions.find((s) => s.guildId === interaction.guildId)
           : null;
+
+        const sttLine = `• STT 엔진/모델: **${sttSummary.provider}** — \`${sttSummary.model}\`\n• 언어/감도: \`${sttSummary.language}\` · RMS≥\`${sttSummary.minRmsThreshold}\` · 무음대기 \`${sttSummary.silenceDurationMs}ms\``;
 
         const embed = new EmbedBuilder()
           .setColor(0x5865f2)
           .setTitle("🎙️ 음성 통화 상태")
           .setDescription(
             currentSession
-              ? `• 접속 채널: **${currentSession.channelName}**\n• 현재 상태: **${currentSession.voiceChatEnabled ? "🟢 활성 (경청 중)" : "⏸️ 일시 정지"}**\n• 재생 모드: \`${currentSession.playbackMode}\`\n• 활성 화자 수: ${currentSession.activeSpeakerCount}명`
-              : "현재 이 서버의 음성 채널에 접속해 있지 않습니다. `/join`으로 불러보세요!",
+              ? `• 접속 채널: **${currentSession.channelName}**\n• 현재 상태: **${currentSession.voiceChatEnabled ? "🟢 활성 (경청 중)" : "⏸️ 일시 정지"}**\n• 재생 모드: \`${currentSession.playbackMode}\`\n• 활성 화자 수: ${currentSession.activeSpeakerCount}명\n${sttLine}`
+              : `현재 이 서버의 음성 채널에 접속해 있지 않습니다. \`/join\`으로 불러보세요!\n\n${sttLine}`,
           );
         await interaction.editReply({ embeds: [embed] });
         return;

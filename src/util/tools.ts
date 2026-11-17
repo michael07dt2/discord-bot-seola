@@ -4,7 +4,11 @@ import { spawn, execFile } from "child_process";
 import { promisify } from "util";
 import type { ChatCompletionTool } from "openai/resources/chat/completions/completions.js";
 import type { SendableChannels } from "discord.js";
-import { getCurrentVoicePreset, leaveAllVoiceChannels } from "./voiceChat.ts";
+import {
+  getCurrentVoicePreset,
+  getSttConfigSummary,
+  leaveAllVoiceChannels,
+} from "./voiceChat.ts";
 import { listUserMemories, saveUserMemory } from "./memoryRag.ts";
 import CONFIG from "../config/index.ts";
 
@@ -746,6 +750,7 @@ export const getBotStatusReport = async (): Promise<string> => {
   const secs = uptimeSec % 60;
   const memMb = Math.round(process.memoryUsage().rss / 1024 / 1024);
   const voicePreset = getCurrentVoicePreset();
+  const sttSummary = getSttConfigSummary();
 
   let gitInfo = "";
   try {
@@ -762,6 +767,7 @@ export const getBotStatusReport = async (): Promise<string> => {
     `- 실행 시간(Uptime): ${mins}분 ${secs}초`,
     `- 메모리 사용량(RSS): ${memMb} MB`,
     `- 현재 TTS 목소리: ${voicePreset.label} (${voicePreset.id})`,
+    `- 현재 STT 엔진/모델: [${sttSummary.provider}] ${sttSummary.model} (언어: ${sttSummary.language}, VAD RMS>=${sttSummary.minRmsThreshold}, 무음대기=${sttSummary.silenceDurationMs}ms)`,
     `- 실행 중인 자기개선(agy/hermes) 작업 수: ${activeSelfImprovementJobs.size}개`,
     `- 작업 디렉터리 Git 상태: ${gitInfo}`,
   ].join("\n");
