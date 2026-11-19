@@ -720,6 +720,7 @@ interface GuildVoiceSession {
   textChannel: SendableChannels | null;
   activeUsers: Set<string>;
   processingChain: Promise<void>;
+  pendingSttCount: number;
   voiceChatEnabled: boolean;
   playbackMode: "idle" | "tts" | "music";
   cleanup: () => void;
@@ -828,13 +829,24 @@ export const getSttConfigSummary = (): {
 type AsrPipelineLoader = (
   task: "automatic-speech-recognition",
   model: string,
-  options: { dtype?: DataType | Record<string, DataType> },
+  options: {
+    dtype?: DataType | Record<string, DataType>;
+    session_options?: {
+      intraOpNumThreads?: number;
+      interOpNumThreads?: number;
+    };
+  },
 ) => Promise<AutomaticSpeechRecognitionPipeline>;
 
 const loadWhisperModelWithRetry = async (
   loadAsr: AsrPipelineLoader,
   modelId: string,
 ): Promise<AutomaticSpeechRecognitionPipeline> => {
+  // Discord WebSocket 및 SlashCommand(3초 deferReply) 이벤트 루프 블로킹을 막기 위해 ONNX 스레드 수 제한
+  const sessionOptions = {
+    intraOpNumThreads: 2,
+    interOpNumThreads: 1,
+  };
   const hybridDtype: Record<string, DataType> = {
     encoder_model: STT_CONFIG.encoderDtype as DataType,
     decoder_model_merged: STT_CONFIG.decoderDtype as DataType,
@@ -842,6 +854,7 @@ const loadWhisperModelWithRetry = async (
   try {
     return await loadAsr("automatic-speech-recognition", modelId, {
       dtype: hybridDtype,
+      session_options: sessionOptions,
     });
   } catch (hybridErr) {
     console.warn(
@@ -850,6 +863,7 @@ const loadWhisperModelWithRetry = async (
     );
     return await loadAsr("automatic-speech-recognition", modelId, {
       dtype: STT_CONFIG.decoderDtype as DataType,
+      session_options: sessionOptions,
     });
   }
 };
@@ -2513,6 +2527,7 @@ export const setupVoiceChatListener = (params: {
     textChannel,
     activeUsers: new Set<string>(),
     processingChain: Promise.resolve(),
+    pendingSttCount: 0,
     voiceChatEnabled: true,
     playbackMode: "idle",
     cleanup: () => {},
@@ -2608,8 +2623,19 @@ export const setupVoiceChatListener = (params: {
         return;
       }
 
+      // 다인원 채널 등에서 STT 작업이 이미 밀려 있으면 이벤트 루프/인터랙션 지연 방지를 위해 초과분 스킵
+      if (session.pendingSttCount >= 2) {
+        console.log(
+          `[VoiceChat:Debug] ⏭️ STT 대기열 혼잡(대기 ${session.pendingSttCount}건)으로 발화 스킵`,
+        );
+        return;
+      }
+
+      session.pendingSttCount++;
       session.processingChain = session.processingChain
         .then(async () => {
+          // 이벤트 루프에 대기 중인 Discord 인터랙션(deferReply 등)을 먼저 처리하도록 양보
+          await new Promise<void>((resolve) => setImmediate(resolve));
           const sttStartMs = Date.now();
           const rawText = await transcribeAudioSamples(samples, durationSec);
           const sttElapsedMs = Date.now() - sttStartMs;
@@ -2679,7 +2705,7 @@ export const setupVoiceChatListener = (params: {
             );
             player.stop();
             removeVoiceChatSession(guildId);
-            connection.destroy();
+            notifyVoiceDashboardStatusChanged();
             return;
           }
 
@@ -3023,6 +3049,9 @@ export const setupVoiceChatListener = (params: {
         })
         .catch((err) => {
           console.error("[VoiceChat] 음성 대화 처리 중 오류 발생:", err);
+        })
+        .finally(() => {
+          session.pendingSttCount = Math.max(0, session.pendingSttCount - 1);
         });
     });
   };

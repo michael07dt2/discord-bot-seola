@@ -926,7 +926,6 @@ export const handlePrefixCommand = async (
 
     getGuildAudioPlayer(voiceChannel.guild.id).stop();
     removeVoiceChatSession(voiceChannel.guild.id);
-    connection.destroy();
     notifyDashboardStatusChanged(getDashboardStatusSnapshot());
     await appendConversationContext(
       getUserKey(message),
