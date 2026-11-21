@@ -5,7 +5,7 @@ import { PassThrough, type Readable } from "stream";
 import CONFIG from "../config/index.ts";
 
 export interface QwenTtsOptions {
-  mode?: "clone" | "custom" | undefined;
+  mode?: "clone" | "xvec" | "custom" | undefined;
   speaker?: string | undefined;
   instruct?: string | undefined;
   refAudio?: string | undefined;
