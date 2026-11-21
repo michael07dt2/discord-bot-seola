@@ -2934,7 +2934,8 @@ export const setupVoiceChatListener = (params: {
 
           const llmStartMs = Date.now();
           let firstSentenceAtMs: number | null = null;
-          const useWholeReplyTts = getCurrentVoicePreset().engine === "cosyvoice";
+          const engine = getCurrentVoicePreset().engine;
+          const useWholeReplyTts = engine === "cosyvoice" || engine === "qwen";
 
           const speechPipeline = createSentenceSpeechPipeline(
             connection,
@@ -2976,7 +2977,7 @@ export const setupVoiceChatListener = (params: {
 
           if (useWholeReplyTts) {
             console.log(
-              `[VoiceChat:Debug] 🔊 CosyVoice 전체 발화 투입 (자르지 않음): "${aiReply}"`,
+              `[VoiceChat:Debug] 🔊 ${engine === "qwen" ? "Qwen3-TTS" : "CosyVoice"} 전체 발화 투입 (자르지 않음): "${aiReply}"`,
             );
             speechPipeline.enqueueSentence(aiReply);
           }

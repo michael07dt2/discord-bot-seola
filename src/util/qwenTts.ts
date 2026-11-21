@@ -1,3 +1,4 @@
+import crypto from "crypto";
 import fs from "fs";
 import path from "path";
 import { PassThrough, type Readable } from "stream";
@@ -21,8 +22,9 @@ let lastHealthCheckTime = 0;
 let lastHealthCheckResult = false;
 const HEALTH_CACHE_TTL_MS = 10_000;
 
-// 로컬 참조 음원 파일의 base64 인코딩 캐시 (도커/호스트 간 경로 분리 대응)
-const refAudioBase64Cache = new Map<string, string>();
+// 로컬 참조 음원 파일의 base64/SHA-256 해시 캐시 (도커/호스트 간 경로 분리 대응 및 중복 전송 방지)
+const refAudioCache = new Map<string, { base64: string; sha256: string }>();
+const uploadedRefHashes = new Set<string>();
 
 const resolveLocalAudioPath = (inputPath: string): string => {
   if (fs.existsSync(inputPath)) {
@@ -36,18 +38,24 @@ const resolveLocalAudioPath = (inputPath: string): string => {
   return inputPath;
 };
 
-const loadRefAudioBase64 = (refAudioPath: string): string | undefined => {
+const loadRefAudioAsset = (
+  refAudioPath: string,
+): { base64: string; sha256: string } | undefined => {
   if (!refAudioPath) return undefined;
   const resolvedPath = resolveLocalAudioPath(refAudioPath);
-  if (refAudioBase64Cache.has(resolvedPath)) {
-    return refAudioBase64Cache.get(resolvedPath);
+  if (refAudioCache.has(resolvedPath)) {
+    return refAudioCache.get(resolvedPath);
   }
   if (!fs.existsSync(resolvedPath)) {
     return undefined;
   }
-  const encoded = fs.readFileSync(resolvedPath).toString("base64");
-  refAudioBase64Cache.set(resolvedPath, encoded);
-  return encoded;
+  const rawBuffer = fs.readFileSync(resolvedPath);
+  const entry = {
+    base64: rawBuffer.toString("base64"),
+    sha256: crypto.createHash("sha256").update(rawBuffer).digest("hex"),
+  };
+  refAudioCache.set(resolvedPath, entry);
+  return entry;
 };
 
 /**
@@ -109,7 +117,7 @@ const doSynthesizeQwenSentence = async (
   const speaker = options?.speaker || "Vivian";
   const instruct = options?.instruct || "";
   const refAudio = options?.refAudio || "";
-  const refAudioBase64 = loadRefAudioBase64(refAudio);
+  const refAudioAsset = loadRefAudioAsset(refAudio);
   const refText = options?.refText || "";
   const timeoutMs = options?.timeoutMs ?? CONFIG.QWEN_TTS_TIMEOUT_MS;
   const startTime = Date.now();
@@ -122,8 +130,8 @@ const doSynthesizeQwenSentence = async (
     `[Qwen3-TTS] 🎙️ 음성 합성 시작: "${displayExcerpt}" (서버: ${baseUrl}, 모드: ${mode}, 제한시간: ${timeoutMs / 1000}초)`,
   );
 
-  try {
-    const res = await fetch(`${baseUrl}/v1/tts`, {
+  const postTts = (useHashOnly: boolean) =>
+    fetch(`${baseUrl}/v1/tts`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -132,16 +140,37 @@ const doSynthesizeQwenSentence = async (
         speaker,
         instruct,
         ref_audio: refAudio,
-        ...(refAudioBase64 ? { ref_audio_base64: refAudioBase64 } : {}),
+        ...(refAudioAsset
+          ? useHashOnly
+            ? { ref_audio_hash: refAudioAsset.sha256 }
+            : { ref_audio_base64: refAudioAsset.base64 }
+          : {}),
         ref_text: refText,
         response_format: "wav",
       }),
       signal: controller.signal,
     });
 
+  try {
+    const uploadKey = refAudioAsset
+      ? `${baseUrl}|${refAudioAsset.sha256}`
+      : null;
+    const canUseHash = uploadKey ? uploadedRefHashes.has(uploadKey) : false;
+
+    let res = await postTts(canUseHash);
+    // 서버 재시작 등으로 해시 캐시가 유실된 경우(404) base64로 1회 재업로드
+    if (res.status === 404 && canUseHash && uploadKey) {
+      uploadedRefHashes.delete(uploadKey);
+      res = await postTts(false);
+    }
+
     if (!res.ok) {
       const errText = await res.text().catch(() => "");
       throw new Error(`Qwen3-TTS API 호출 실패 (${res.status}): ${errText}`);
+    }
+
+    if (uploadKey && !uploadedRefHashes.has(uploadKey)) {
+      uploadedRefHashes.add(uploadKey);
     }
 
     const sampleRateHeader = res.headers.get("X-Sample-Rate");
