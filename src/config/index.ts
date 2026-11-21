@@ -116,9 +116,9 @@ export const CONFIG = {
     10,
   ),
 
-  // Qwen3-TTS MLX 백엔드 설정 (Apple Silicon 포트 7865)
+  // Qwen3-TTS MLX 백엔드 설정 (Apple Silicon 포트 8000)
   QWEN_TTS_API_URL: (
-    process.env.QWEN_TTS_API_URL || "http://127.0.0.1:7865"
+    process.env.QWEN_TTS_API_URL || "http://127.0.0.1:8000"
   ).replace(/\/+$/, ""),
   QWEN_TTS_TIMEOUT_MS: parseInt(
     process.env.QWEN_TTS_TIMEOUT_MS || "180000",

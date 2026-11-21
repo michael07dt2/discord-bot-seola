@@ -194,9 +194,7 @@ export const VOICE_PRESETS: Record<string, VoicePreset> = {
       "차분하고 쿨하면서도 앙칼진 블루아카이브 케이의 신경망 복제 보이스 (Qwen3-TTS / CosyVoice)",
     engine: "qwen",
     qwenMode: "clone",
-    qwenRefAudio: resolveAssetPath(
-      "/Users/micha/Projects/personal_projects/qwen3-tts-mlx/samples/youtube_kei.wav",
-    ),
+    qwenRefAudio: resolveAssetPath("asset/youtube_kei.wav"),
     qwenRefText:
       "에이! 진짜 그렇게 착한 애 취급하지 말라구요! 그쵸! 그렇게까지 애 아니니까요! 무섭겠다... 선생님 지금 웃었죠? 똑똑히 봤어요! 두고 봐요! 언젠간 그 몸에 뼈저리게 새겨줄테니까!",
     qwenInstruct:
@@ -279,9 +277,7 @@ export const VOICE_PRESETS: Record<string, VoicePreset> = {
       "다시는 만날 수 없는 그 사람의 다정하고 나긋나긋한 신경망 복제 보이스 (Qwen3-TTS)",
     engine: "qwen",
     qwenMode: "clone",
-    qwenRefAudio: resolveAssetPath(
-      "/Users/micha/Projects/personal_projects/qwen3-tts-mlx/samples/youtube_myoya.wav",
-    ),
+    qwenRefAudio: resolveAssetPath("asset/youtube_myoya.wav"),
     qwenRefText:
       "길드 이름을 동화공방으로 지은 배경이 혹시 있으실까요? 저게 원래요 완전 방송 초창기 때 제 블로그 이름이었어요. 약간 동화책 같은 그림을 그리는 작업실 같은 느낌으로 만든 거예요. 제가 원래 그림으로 방송을 시작했었단 말이죠. 근데 애니메이션 제작사가 있더라고요. 엄청 유명한.".normalize(
         "NFC",

@@ -1,3 +1,5 @@
+import fs from "fs";
+import path from "path";
 import { PassThrough, type Readable } from "stream";
 import CONFIG from "../config/index.ts";
 
@@ -18,6 +20,35 @@ export interface QwenTtsResult {
 let lastHealthCheckTime = 0;
 let lastHealthCheckResult = false;
 const HEALTH_CACHE_TTL_MS = 10_000;
+
+// 로컬 참조 음원 파일의 base64 인코딩 캐시 (도커/호스트 간 경로 분리 대응)
+const refAudioBase64Cache = new Map<string, string>();
+
+const resolveLocalAudioPath = (inputPath: string): string => {
+  if (fs.existsSync(inputPath)) {
+    return inputPath;
+  }
+  const baseName = path.basename(inputPath);
+  const localProjectAsset = path.resolve(process.cwd(), "asset", baseName);
+  if (fs.existsSync(localProjectAsset)) {
+    return localProjectAsset;
+  }
+  return inputPath;
+};
+
+const loadRefAudioBase64 = (refAudioPath: string): string | undefined => {
+  if (!refAudioPath) return undefined;
+  const resolvedPath = resolveLocalAudioPath(refAudioPath);
+  if (refAudioBase64Cache.has(resolvedPath)) {
+    return refAudioBase64Cache.get(resolvedPath);
+  }
+  if (!fs.existsSync(resolvedPath)) {
+    return undefined;
+  }
+  const encoded = fs.readFileSync(resolvedPath).toString("base64");
+  refAudioBase64Cache.set(resolvedPath, encoded);
+  return encoded;
+};
 
 /**
  * Qwen3-TTS MLX 서버 가동 여부 빠른 헬스체크 (1.5초 타임아웃)
@@ -78,6 +109,7 @@ const doSynthesizeQwenSentence = async (
   const speaker = options?.speaker || "Vivian";
   const instruct = options?.instruct || "";
   const refAudio = options?.refAudio || "";
+  const refAudioBase64 = loadRefAudioBase64(refAudio);
   const refText = options?.refText || "";
   const timeoutMs = options?.timeoutMs ?? CONFIG.QWEN_TTS_TIMEOUT_MS;
   const startTime = Date.now();
@@ -87,7 +119,7 @@ const doSynthesizeQwenSentence = async (
 
   const displayExcerpt = text.length > 25 ? `${text.slice(0, 25)}...` : text;
   console.log(
-    `[Qwen3-TTS] 🎙️ 음성 합성 시작: "${displayExcerpt}" (모드: ${mode}, 제한시간: ${timeoutMs / 1000}초)`,
+    `[Qwen3-TTS] 🎙️ 음성 합성 시작: "${displayExcerpt}" (서버: ${baseUrl}, 모드: ${mode}, 제한시간: ${timeoutMs / 1000}초)`,
   );
 
   try {
@@ -100,7 +132,9 @@ const doSynthesizeQwenSentence = async (
         speaker,
         instruct,
         ref_audio: refAudio,
+        ...(refAudioBase64 ? { ref_audio_base64: refAudioBase64 } : {}),
         ref_text: refText,
+        response_format: "wav",
       }),
       signal: controller.signal,
     });
@@ -109,6 +143,9 @@ const doSynthesizeQwenSentence = async (
       const errText = await res.text().catch(() => "");
       throw new Error(`Qwen3-TTS API 호출 실패 (${res.status}): ${errText}`);
     }
+
+    const sampleRateHeader = res.headers.get("X-Sample-Rate");
+    const sampleRate = sampleRateHeader ? parseInt(sampleRateHeader, 10) || 24000 : 24000;
 
     const audioBuffer = Buffer.from(await res.arrayBuffer());
     const passThrough = new PassThrough();
@@ -121,7 +158,7 @@ const doSynthesizeQwenSentence = async (
 
     return {
       stream: passThrough,
-      sampleRate: 24000,
+      sampleRate,
     };
   } catch (err: any) {
     if (err?.name === "AbortError") {
