@@ -1,7 +1,7 @@
 import crypto from "crypto";
 import fs from "fs";
 import path from "path";
-import { PassThrough, type Readable } from "stream";
+import { PassThrough, Readable } from "stream";
 import CONFIG from "../config/index.ts";
 
 export interface QwenTtsOptions {
@@ -105,6 +105,24 @@ export const synthesizeQwenSentence = async (
   return enqueueInference(() => doSynthesizeQwenSentence(rawText, options));
 };
 
+const createStreamingWavHeader = (sampleRate: number): Buffer => {
+  const header = Buffer.alloc(44);
+  header.write("RIFF", 0);
+  header.writeUInt32LE(0xffffffff, 4);
+  header.write("WAVE", 8);
+  header.write("fmt ", 12);
+  header.writeUInt32LE(16, 16);
+  header.writeUInt16LE(1, 20);
+  header.writeUInt16LE(1, 22);
+  header.writeUInt32LE(sampleRate, 24);
+  header.writeUInt32LE(sampleRate * 2, 28);
+  header.writeUInt16LE(2, 32);
+  header.writeUInt16LE(16, 34);
+  header.write("data", 36);
+  header.writeUInt32LE(0xffffffff, 40);
+  return header;
+};
+
 const doSynthesizeQwenSentence = async (
   rawText: string,
   options?: QwenTtsOptions,
@@ -131,7 +149,7 @@ const doSynthesizeQwenSentence = async (
   );
 
   const postTts = (useHashOnly: boolean) =>
-    fetch(`${baseUrl}/v1/tts`, {
+    fetch(`${baseUrl}/tts/stream`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -146,7 +164,6 @@ const doSynthesizeQwenSentence = async (
             : { ref_audio_base64: refAudioAsset.base64 }
           : {}),
         ref_text: refText,
-        response_format: "wav",
       }),
       signal: controller.signal,
     });
@@ -176,20 +193,49 @@ const doSynthesizeQwenSentence = async (
     const sampleRateHeader = res.headers.get("X-Sample-Rate");
     const sampleRate = sampleRateHeader ? parseInt(sampleRateHeader, 10) || 24000 : 24000;
 
-    const audioBuffer = Buffer.from(await res.arrayBuffer());
-    const passThrough = new PassThrough();
-    passThrough.end(audioBuffer);
+    if (!res.body) {
+      const audioBuffer = Buffer.from(await res.arrayBuffer());
+      const passThrough = new PassThrough();
+      passThrough.write(createStreamingWavHeader(sampleRate));
+      passThrough.end(audioBuffer);
+      clearTimeout(timeoutId);
+      return { stream: passThrough, sampleRate };
+    }
 
-    const elapsedSec = ((Date.now() - startTime) / 1000).toFixed(1);
-    console.log(
-      `[Qwen3-TTS] ✅ 음성 합성 완료 (${elapsedSec}초 소요, 크기: ${audioBuffer.length}바이트)`,
-    );
+    // 첫 PCM 청크가 도착하는 즉시 Discord 오디오 파이프라인으로 흘려보내 TTFA를 최소화
+    const passThrough = new PassThrough();
+    passThrough.write(createStreamingWavHeader(sampleRate));
+    const webStream = Readable.fromWeb(res.body as any);
+    let totalBytes = 0;
+    let firstChunkLogged = false;
+
+    webStream.on("data", (chunk: Buffer) => {
+      totalBytes += chunk.length;
+      if (!firstChunkLogged) {
+        firstChunkLogged = true;
+        const ttfaSec = ((Date.now() - startTime) / 1000).toFixed(2);
+        console.log(`[Qwen3-TTS] ⚡ 첫 오디오 청크 수신 (${ttfaSec}초)`);
+      }
+    });
+    webStream.on("end", () => {
+      clearTimeout(timeoutId);
+      const elapsedSec = ((Date.now() - startTime) / 1000).toFixed(1);
+      console.log(
+        `[Qwen3-TTS] ✅ 스트리밍 합성 완료 (${elapsedSec}초 소요, 크기: ${totalBytes}바이트)`,
+      );
+    });
+    webStream.on("error", (err) => {
+      clearTimeout(timeoutId);
+      passThrough.destroy(err);
+    });
+    webStream.pipe(passThrough);
 
     return {
       stream: passThrough,
       sampleRate,
     };
   } catch (err: any) {
+    clearTimeout(timeoutId);
     if (err?.name === "AbortError") {
       console.error(
         `[Qwen3-TTS] ⏱️ 음성 합성 시간 초과 (${timeoutMs / 1000}초): 로컬 모델 추론 시간이 초과되었습니다.`,
@@ -198,7 +244,5 @@ const doSynthesizeQwenSentence = async (
       console.error("[Qwen3-TTS] 음성 합성 중 오류 발생:", err);
     }
     throw err;
-  } finally {
-    clearTimeout(timeoutId);
   }
 };
