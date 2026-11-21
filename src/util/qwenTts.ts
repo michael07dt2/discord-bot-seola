@@ -202,38 +202,48 @@ const doSynthesizeQwenSentence = async (
       return { stream: passThrough, sampleRate };
     }
 
-    // 첫 PCM 청크가 도착하는 즉시 Discord 오디오 파이프라인으로 흘려보내 TTFA를 최소화
+    // 첫 PCM 청크가 도착한 시점에 스트림을 반환해 AudioPlayer가 5초 Playing 대기 타임아웃에 걸리지 않도록 한다.
     const passThrough = new PassThrough();
     passThrough.write(createStreamingWavHeader(sampleRate));
     const webStream = Readable.fromWeb(res.body as any);
     let totalBytes = 0;
-    let firstChunkLogged = false;
 
-    webStream.on("data", (chunk: Buffer) => {
-      totalBytes += chunk.length;
-      if (!firstChunkLogged) {
-        firstChunkLogged = true;
-        const ttfaSec = ((Date.now() - startTime) / 1000).toFixed(2);
-        console.log(`[Qwen3-TTS] ⚡ 첫 오디오 청크 수신 (${ttfaSec}초)`);
-      }
-    });
-    webStream.on("end", () => {
-      clearTimeout(timeoutId);
-      const elapsedSec = ((Date.now() - startTime) / 1000).toFixed(1);
-      console.log(
-        `[Qwen3-TTS] ✅ 스트리밍 합성 완료 (${elapsedSec}초 소요, 크기: ${totalBytes}바이트)`,
-      );
-    });
-    webStream.on("error", (err) => {
-      clearTimeout(timeoutId);
-      passThrough.destroy(err);
-    });
-    webStream.pipe(passThrough);
+    return await new Promise<QwenTtsResult>((resolve, reject) => {
+      let resolved = false;
 
-    return {
-      stream: passThrough,
-      sampleRate,
-    };
+      webStream.on("data", (chunk: Buffer) => {
+        totalBytes += chunk.length;
+        passThrough.write(chunk);
+        if (!resolved) {
+          resolved = true;
+          const ttfaSec = ((Date.now() - startTime) / 1000).toFixed(2);
+          console.log(`[Qwen3-TTS] ⚡ 첫 오디오 청크 수신 (${ttfaSec}초)`);
+          resolve({ stream: passThrough, sampleRate });
+        }
+      });
+
+      webStream.on("end", () => {
+        clearTimeout(timeoutId);
+        passThrough.end();
+        const elapsedSec = ((Date.now() - startTime) / 1000).toFixed(1);
+        console.log(
+          `[Qwen3-TTS] ✅ 스트리밍 합성 완료 (${elapsedSec}초 소요, 크기: ${totalBytes}바이트)`,
+        );
+        if (!resolved) {
+          resolved = true;
+          resolve({ stream: passThrough, sampleRate });
+        }
+      });
+
+      webStream.on("error", (err) => {
+        clearTimeout(timeoutId);
+        passThrough.destroy(err);
+        if (!resolved) {
+          resolved = true;
+          reject(err);
+        }
+      });
+    });
   } catch (err: any) {
     clearTimeout(timeoutId);
     if (err?.name === "AbortError") {
