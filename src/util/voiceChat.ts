@@ -203,9 +203,7 @@ export const VOICE_PRESETS: Record<string, VoicePreset> = {
       "차갑고 감정이 절제된 어린 소녀의 목소리. 아리스보다 반 옥타브 낮고 차분한 톤으로, 억양의 높낮이 변화가 적고 기계처럼 또박또박 일정한 속도로 말한다.",
     cosySpeed: 1.0,
     cosyMode: "3초 고속 복제",
-    cosyPromptWav: resolveAssetPath(
-      "/Users/micha/Projects/personal_projects/CosyVoice/asset/youtube_kei.wav",
-    ),
+    cosyPromptWav: resolveAssetPath("asset/youtube_kei.wav"),
     cosyInstructText:
       "차갑고 감정이 절제된 어린 소녀의 목소리. 아리스보다 반 옥타브 낮고 차분한 톤으로, 억양의 높낮이 변화가 적고 기계처럼 또박또박 일정한 속도로 말한다.",
     voiceName: "kei-custom",
@@ -247,9 +245,7 @@ export const VOICE_PRESETS: Record<string, VoicePreset> = {
     engine: "cosyvoice",
     cosySpeed: 1.0,
     cosyMode: "3초 고속 복제",
-    cosyPromptWav: resolveAssetPath(
-      "/Users/micha/Projects/personal_projects/CosyVoice/asset/youtube_prompt.wav",
-    ),
+    cosyPromptWav: resolveAssetPath("asset/youtube_prompt.wav"),
     cosyPromptText:
       "확실히 요새 좀 옛날보단 그림에 대한 상상력이 줄어든 것 같아요.".normalize(
         "NFC",
@@ -266,9 +262,7 @@ export const VOICE_PRESETS: Record<string, VoicePreset> = {
     engine: "cosyvoice",
     cosySpeed: 1.0,
     cosyMode: "3초 고속 복제",
-    cosyPromptWav: resolveAssetPath(
-      "/Users/micha/Projects/personal_projects/CosyVoice/asset/youtube_prompt_307_318.wav",
-    ),
+    cosyPromptWav: resolveAssetPath("asset/youtube_prompt_307_318.wav"),
     cosyPromptText:
       "자 이렇게 오늘의 게임 마무리해보도록 하겠습니다. 어쩐지 뭐 얼마 안 한 거 같은데 여기 다 온 거 같지?".normalize(
         "NFC",
@@ -296,9 +290,7 @@ export const VOICE_PRESETS: Record<string, VoicePreset> = {
       "A young woman with a bright, cute, and high-pitched voice, speaking cheerfully with lively intonation.",
     cosySpeed: 1.0,
     cosyMode: "3초 고속 복제",
-    cosyPromptWav: resolveAssetPath(
-      "/Users/micha/Projects/personal_projects/CosyVoice/asset/youtube_myoya.wav",
-    ),
+    cosyPromptWav: resolveAssetPath("asset/youtube_myoya.wav"),
     cosyPromptText:
       "길드 이름을 동화공방으로 지은 배경이 혹시 있으실까요? 저게 원래요 완전 방송 초창기 때 제 블로그 이름이었어요. 약간 동화책 같은 그림을 그리는 작업실 같은 느낌으로 만든 거예요. 제가 원래 그림으로 방송을 시작했었단 말이죠. 근데 애니메이션 제작사가 있더라고요. 엄청 유명한.".normalize(
         "NFC",
@@ -318,9 +310,7 @@ export const VOICE_PRESETS: Record<string, VoicePreset> = {
     engine: "cosyvoice",
     cosySpeed: 1.0,
     cosyMode: "3초 고속 복제",
-    cosyPromptWav: resolveAssetPath(
-      "/Users/micha/Projects/personal_projects/CosyVoice/asset/youtube_myoya.wav",
-    ),
+    cosyPromptWav: resolveAssetPath("asset/youtube_myoya.wav"),
     cosyPromptText:
       "길드 이름을 동화공방으로 지은 배경이 혹시 있으실까요? 저게 원래요 완전 방송 초창기 때 제 블로그 이름이었어요. 약간 동화책 같은 그림을 그리는 작업실 같은 느낌으로 만든 거예요. 제가 원래 그림으로 방송을 시작했었단 말이죠. 근데 애니메이션 제작사가 있더라고요. 엄청 유명한.".normalize(
         "NFC",
