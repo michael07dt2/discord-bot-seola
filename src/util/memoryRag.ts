@@ -278,10 +278,18 @@ export const retrieveRelevantMemories = async (
       }
     }
 
-    const itemVec =
-      item.embedding && item.embedding.length > 0
-        ? item.embedding
-        : await getEmbedding(item.memory);
+    let itemVec = item.embedding;
+    // 기존 폴백 임베딩(128차원) 등 차원이 현재 임베딩과 다르면 재계산 후 비동기로 갱신
+    if (!itemVec || itemVec.length === 0 || itemVec.length !== queryVec.length) {
+      itemVec = await getEmbedding(item.memory);
+      if (itemVec.length === queryVec.length) {
+        item.embedding = itemVec;
+        db.update(userMemoriesTable)
+          .set({ embedding: JSON.stringify(itemVec), updatedAt: new Date() })
+          .where(eq(userMemoriesTable.id, item.id))
+          .catch(() => {});
+      }
+    }
     const cosScore = cosineSimilarity(queryVec, itemVec);
     const totalScore = cosScore + keywordOverlap + (item.importance * 0.05);
 

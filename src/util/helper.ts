@@ -44,7 +44,7 @@ const openAiClient = new OpenAI({
   apiKey: "ollama",
 });
 
-const DEFAULT_MODEL = "gemma4:12b";
+const DEFAULT_MODEL = "gemma4:e2b-mlx";
 // 메모리 캐시: 유저별 선택 모델 저장 (DB 조회 최소화 및 폴백 지원)
 const userModelCache = new Map<string, string>();
 let isUserModelsTableInitialized = false;
@@ -232,7 +232,7 @@ export const setUserModel = async (
     (m) => m.toLowerCase() === targetInput,
   );
 
-  // 2. 부분 문자열 일치 검색 (예: "12b" -> "gemma4:12b")
+  // 2. 부분 문자열 일치 검색 (예: "e2b" -> "gemma4:e2b-mlx")
   if (!matchedModel) {
     matchedModel = availableModels.find((m) =>
       m.toLowerCase().includes(targetInput),

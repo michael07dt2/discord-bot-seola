@@ -295,7 +295,7 @@ export const slashCommands = [
           opt
             .setName("name")
             .setNameLocalization("ko", "모델명")
-            .setDescription("변경할 모델명 (예: gemma4:12b, gemma4)")
+            .setDescription("변경할 모델명 (예: gemma4:e2b-mlx, gemma4)")
             .setRequired(true),
         ),
     ),

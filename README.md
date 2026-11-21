@@ -27,7 +27,7 @@ flowchart TD
 
     subgraph Storage["Storage & AI Backends"]
         PG[("PostgreSQL 18 (Drizzle ORM)")]
-        Ollama["Ollama LLM (gemma4:12b)"]
+        Ollama["Ollama LLM (gemma4:e2b-mlx)"]
         Embed["Embedding API (nomic-embed-text)"]
     end
 
@@ -152,7 +152,7 @@ flowchart TD
 - **Docker & Docker Compose**: PostgreSQL 18 구동
 - **Ollama**: 로컬 LLM 서버 (`http://localhost:11434`)
   ```bash
-  ollama pull gemma4:12b
+  ollama pull gemma4:e2b-mlx
   ollama pull nomic-embed-text
   ```
 
