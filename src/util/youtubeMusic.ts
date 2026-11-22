@@ -158,8 +158,11 @@ const guildMusicQueues = new Map<string, QueuedMusicItem[]>();
 const guildLoopModes = new Map<string, MusicLoopMode>();
 // 길드별 최하단 뮤직 컨트롤러 메시지 1개 유지용 캐시
 const guildControlMessages = new Map<string, Message>();
+// 길드별 뮤직 컨트롤러가 전송된 텍스트 채널 캐시 (다음 곡 자동 전환 시 최하단 재전송용)
+const guildControlChannels = new Map<string, SendableChannels>();
 // 길드별 뮤직 컨트롤러 재생 시간 주기적 갱신 타이머
 const guildControlRefreshTimers = new Map<string, NodeJS.Timeout>();
+const MUSIC_CONTROL_REFRESH_INTERVAL_MS = 3_000;
 
 const clearGuildControlRefreshTimer = (guildId: string): void => {
   const timer = guildControlRefreshTimers.get(guildId);
@@ -183,7 +186,7 @@ const ensureGuildControlRefreshTimer = (guildId: string): void => {
       return;
     }
     refreshGuildMusicControlPanel(guildId);
-  }, 10_000);
+  }, MUSIC_CONTROL_REFRESH_INTERVAL_MS);
   timer.unref();
   guildControlRefreshTimers.set(guildId, timer);
 };
@@ -405,6 +408,58 @@ export const removeGuildMusicQueueItem = (
 };
 
 /**
+ * 길드의 음악 대기열에서 특정 순번(1부터 시작)의 곡을 원하는 순번으로 이동
+ */
+export const moveGuildMusicQueueItem = (
+  guildId: string,
+  from1Based: number,
+  to1Based: number,
+): { item: QueuedMusicItem; from: number; to: number } | null => {
+  const queue = guildMusicQueues.get(guildId);
+  if (
+    !queue ||
+    from1Based < 1 ||
+    from1Based > queue.length ||
+    to1Based < 1 ||
+    to1Based > queue.length
+  ) {
+    return null;
+  }
+  const [moved] = queue.splice(from1Based - 1, 1);
+  if (!moved) return null;
+  queue.splice(to1Based - 1, 0, moved);
+  refreshGuildMusicControlPanel(guildId);
+  return { item: moved, from: from1Based, to: to1Based };
+};
+
+/**
+ * 길드의 음악 대기열에서 두 순번(1부터 시작)의 곡 위치를 서로 교환
+ */
+export const swapGuildMusicQueueItems = (
+  guildId: string,
+  first1Based: number,
+  second1Based: number,
+): { first: QueuedMusicItem; second: QueuedMusicItem } | null => {
+  const queue = guildMusicQueues.get(guildId);
+  if (
+    !queue ||
+    first1Based < 1 ||
+    first1Based > queue.length ||
+    second1Based < 1 ||
+    second1Based > queue.length
+  ) {
+    return null;
+  }
+  const firstItem = queue[first1Based - 1];
+  const secondItem = queue[second1Based - 1];
+  if (!firstItem || !secondItem) return null;
+  queue[first1Based - 1] = secondItem;
+  queue[second1Based - 1] = firstItem;
+  refreshGuildMusicControlPanel(guildId);
+  return { first: firstItem, second: secondItem };
+};
+
+/**
  * 길드에서 현재 재생 중인 트랙 정보 조회
  */
 export const getGuildCurrentTrack = (
@@ -512,8 +567,27 @@ const startResolvedTrack = (params: {
   player: AudioPlayer;
   connection?: VoiceConnection | undefined;
   requesterName?: string | undefined;
+  resendControlPanel?: boolean | undefined;
 }): void => {
-  const { guildId, track, player, connection, requesterName } = params;
+  const { guildId, track, player, connection, requesterName, resendControlPanel } = params;
+
+  const syncControlPanel = () => {
+    if (resendControlPanel) {
+      const existingChannel = guildControlMessages.get(guildId)?.channel;
+      const targetChannel: SendableChannels | undefined =
+        guildControlChannels.get(guildId) ??
+        (existingChannel?.isSendable()
+          ? (existingChannel as SendableChannels)
+          : undefined);
+      if (targetChannel) {
+        void sendOrUpdateMusicControlPanel(guildId, targetChannel, player, {
+          forceResend: true,
+        });
+        return;
+      }
+    }
+    refreshGuildMusicControlPanel(guildId);
+  };
 
   if (track.isLocal) {
     stopGuildMusic(guildId, { clearQueue: false });
@@ -542,7 +616,7 @@ const startResolvedTrack = (params: {
     entersState(player, AudioPlayerStatus.Playing, 5_000).catch((err) =>
       console.warn("[Music] 플레이어 재생 상태 진입 지연:", err?.message || err),
     );
-    refreshGuildMusicControlPanel(guildId);
+    syncControlPanel();
     ensureGuildControlRefreshTimer(guildId);
     return;
   }
@@ -561,7 +635,7 @@ const startResolvedTrack = (params: {
   entersState(player, AudioPlayerStatus.Playing, 8_000).catch((err) =>
     console.warn("[Music] 유튜브 스트림 재생 상태 진입 지연:", err?.message || err),
   );
-  refreshGuildMusicControlPanel(guildId);
+  syncControlPanel();
   ensureGuildControlRefreshTimer(guildId);
 };
 
@@ -620,6 +694,7 @@ const ensureGuildMusicIdleHandler = (
           player: targetPlayer,
           connection: targetConnection,
           requesterName: finishedSession.requesterName,
+          resendControlPanel: true,
         });
       } catch (err) {
         console.error(`[Music:${guildId}] 한 곡 반복 재생 실패:`, err);
@@ -650,6 +725,7 @@ const ensureGuildMusicIdleHandler = (
           player: targetPlayer,
           connection: targetConnection,
           requesterName: nextItem.requesterName,
+          resendControlPanel: true,
         });
       } catch (err) {
         console.error(`[Music:${guildId}] 다음 곡 자동 재생 실패:`, err);
@@ -708,6 +784,7 @@ export const skipGuildMusic = async (
         player: targetPlayer,
         connection: binding?.connection,
         requesterName: nextItem.requesterName,
+        resendControlPanel: true,
       });
       return {
         skipped,
@@ -739,6 +816,7 @@ export const playMusicTrack = async (params: {
   requesterName?: string | undefined;
   onQueueEnd?: (() => void) | undefined;
   forceImmediate?: boolean | undefined;
+  insertPosition?: number | undefined;
 }): Promise<PlayMusicResult> => {
   const {
     guildId,
@@ -748,6 +826,7 @@ export const playMusicTrack = async (params: {
     requesterName,
     onQueueEnd,
     forceImmediate,
+    insertPosition,
   } = params;
   const trimmed = query.trim();
   if (!trimmed) {
@@ -782,15 +861,25 @@ export const playMusicTrack = async (params: {
   const firstTrack = resolvedTracks[0]!;
   const extraTracks = resolvedTracks.slice(1);
 
-  const enqueueTracks = (tracksToQueue: MusicTrackInfo[]): number => {
+  const enqueueTracks = (
+    tracksToQueue: MusicTrackInfo[],
+    atPosition1Based?: number,
+  ): number => {
     const queue = guildMusicQueues.get(guildId) || [];
-    for (const t of tracksToQueue) {
-      queue.push({
-        track: t,
-        requesterName,
-        addedAt: new Date(),
-      });
+    const items: QueuedMusicItem[] = tracksToQueue.map((t) => ({
+      track: t,
+      requesterName,
+      addedAt: new Date(),
+    }));
+
+    if (atPosition1Based !== undefined) {
+      const clampedIdx = Math.max(0, Math.min(queue.length, atPosition1Based - 1));
+      queue.splice(clampedIdx, 0, ...items);
+      guildMusicQueues.set(guildId, queue);
+      return clampedIdx + 1;
     }
+
+    queue.push(...items);
     guildMusicQueues.set(guildId, queue);
     return queue.length;
   };
@@ -801,10 +890,14 @@ export const playMusicTrack = async (params: {
     player.state.status !== AudioPlayerStatus.Idle;
 
   if (isAlreadyPlayingMusic && !forceImmediate) {
-    const firstQueuePos = enqueueTracks([firstTrack]);
+    const firstQueuePos = enqueueTracks([firstTrack], insertPosition);
     if (extraTracks.length > 0) {
-      enqueueTracks(extraTracks);
+      enqueueTracks(
+        extraTracks,
+        insertPosition !== undefined ? firstQueuePos + 1 : undefined,
+      );
     }
+    refreshGuildMusicControlPanel(guildId);
     console.log(
       `[Music:${guildId}] 📜 대기열 #${firstQueuePos}번 추가: ${firstTrack.title}` +
         (extraTracks.length > 0 ? ` 외 ${extraTracks.length}곡` : ""),
@@ -962,17 +1055,26 @@ export const createMusicControlPanel = (
         : "실시간";
   const durationDisplay = session ? `⏱️ ${currentTimeText} / ${totalTimeText}` : "⏱️ 0:00 / 0:00";
 
+  const channelText = !session
+    ? "-"
+    : session.track.isLocal
+      ? "📁 로컬 라이브러리"
+      : session.track.uploader || "YouTube";
+
   const embed = new EmbedBuilder()
     .setColor(isStopped ? 0x64748b : isPaused ? 0xfbbf24 : 0x34d399)
     .setTitle("🎵 Now Playing")
     .setDescription(
       session
-        ? `**현재 트랙:** ${session.track.title}`
+        ? session.track.isLocal
+          ? `**현재 트랙:** ${session.track.title}`
+          : `**현재 트랙:** [${session.track.title}](${session.track.url})`
         : "현재 재생 중인 트랙이 없습니다.",
     )
     .addFields(
       { name: "상태", value: statusText, inline: true },
       { name: "재생 시간", value: durationDisplay, inline: true },
+      { name: "채널", value: channelText, inline: true },
       { name: "반복 재생", value: `🔁 ${LOOP_MODE_LABELS[loopMode]}`, inline: true },
       { name: "볼륨", value: `🔊 ${volume}%`, inline: true },
       { name: "다음 곡", value: nextTrackText, inline: false },
@@ -1046,15 +1148,17 @@ export const sendOrUpdateMusicControlPanel = async (
   guildId: string,
   channel: SendableChannels | null | undefined,
   player?: AudioPlayer,
+  options?: { forceResend?: boolean },
 ): Promise<void> => {
   if (!channel || !channel.isSendable()) return;
 
+  guildControlChannels.set(guildId, channel);
   const payload = createMusicControlPanel(guildId, player);
   const existingMsg = guildControlMessages.get(guildId);
 
   if (existingMsg && existingMsg.channelId === channel.id) {
     const lastMessageId = (channel as { lastMessageId?: string | null }).lastMessageId;
-    if (lastMessageId && lastMessageId === existingMsg.id) {
+    if (!options?.forceResend && lastMessageId && lastMessageId === existingMsg.id) {
       try {
         await existingMsg.edit(payload);
         return;
@@ -1137,13 +1241,14 @@ export const handleMusicControlButton = async (
   }
 
   if (customId === "music_skip") {
+    await interaction.deferUpdate();
     const skipResult = await skipGuildMusic(guildId, player);
     if (!skipResult.nextTrack) {
       onPlaybackEnded?.(guildId);
+      await interaction
+        .editReply(createMusicControlPanel(guildId, player, { stopped: true }))
+        .catch(() => {});
     }
-    await interaction.update(
-      createMusicControlPanel(guildId, player, { stopped: !skipResult.nextTrack }),
-    );
     return;
   }
 

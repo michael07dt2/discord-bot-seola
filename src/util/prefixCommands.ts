@@ -42,6 +42,8 @@ import {
   skipGuildMusic,
   clearGuildMusicQueue,
   removeGuildMusicQueueItem,
+  moveGuildMusicQueueItem,
+  swapGuildMusicQueueItems,
 } from "./youtubeMusic.ts";
 import {
   getBotStatusReport,
@@ -176,9 +178,12 @@ export const handlePrefixCommand = async (
           name: "🎵 음악 재생 및 대기열 (텍스트 및 음성 명령 모두 가능)",
           value: [
             "`!play <곡명/링크>` / `설아야 <곡명> 틀어줘` — 음악 재생 *(재생 중이면 대기열 추가)*",
+            "`!끼어들기 <곡명/링크>` / `!끼어들기 #<번호> <곡명>` — 대기열 앞(또는 지정 순번)에 곡 끼워 넣기",
             "`!now` / `!현재곡` — 현재 재생 중인 곡 정보 확인",
             "`!queue` / `!대기열` / `설아야 대기열` — 현재 재생 곡 및 대기열 목록 확인",
             "`!skip` / `!스킵` / `설아야 다음곡` — 다음 곡으로 건너뛰기",
+            "`!move <현재번호> <이동번호>` / `!대기열이동` — 대기열 곡 순서 이동",
+            "`!swap <번호1> <번호2>` / `!대기열교환` — 대기열 두 곡 위치 맞바꾸기",
             "`!remove <번호>` / `!대기열삭제 <번호>` — 대기열 특정 순번 곡 삭제",
             "`!clearqueue` / `!대기열비우기` — 대기열 비우기",
             "`!volume <0~100>` 또는 `!볼륨 <수치>` — 음악 재생 음량 조절 *(기본 20%)*",
@@ -683,6 +688,74 @@ export const handlePrefixCommand = async (
     return;
   }
 
+  // 대기열 순서 이동 프리픽스 명령 (!move <현재번호> <이동번호>, !대기열이동, !순서변경)
+  if (/^(!move|!대기열이동|!순서변경)(?:\s+.*)?$/i.test(message.content.trim())) {
+    const guildId = message.guild?.id;
+    if (!guildId) {
+      await message.reply("❌ 서버(길드) 채널에서만 사용할 수 있습니다.");
+      return;
+    }
+    const rawArg = message.content
+      .trim()
+      .replace(/^(!move|!대기열이동|!순서변경)\s*/i, "")
+      .trim();
+    const parts = rawArg.split(/\s+/);
+    const from = parseInt(parts[0] || "", 10);
+    const to = parseInt(parts[1] || "", 10);
+    if (Number.isNaN(from) || Number.isNaN(to) || from < 1 || to < 1) {
+      await message.reply(
+        "❌ 이동할 현재 번호와 목표 번호를 입력해주세요. (예: `!move 3 1`)",
+      );
+      return;
+    }
+    const result = moveGuildMusicQueueItem(guildId, from, to);
+    if (!result) {
+      await message.reply(
+        `❌ 대기열 범위(현재 ${getGuildMusicQueue(guildId).length}곡) 내에서 올바른 번호를 입력해주세요.`,
+      );
+      return;
+    }
+    notifyDashboardStatusChanged(getDashboardStatusSnapshot());
+    await message.reply(
+      `↕️ **${result.item.track.title}** 곡을 대기열 **#${result.from}번 → #${result.to}번**으로 이동했습니다.`,
+    );
+    return;
+  }
+
+  // 대기열 두 곡 위치 교환 프리픽스 명령 (!swap <번호1> <번호2>, !대기열교환)
+  if (/^(!swap|!대기열교환)(?:\s+.*)?$/i.test(message.content.trim())) {
+    const guildId = message.guild?.id;
+    if (!guildId) {
+      await message.reply("❌ 서버(길드) 채널에서만 사용할 수 있습니다.");
+      return;
+    }
+    const rawArg = message.content
+      .trim()
+      .replace(/^(!swap|!대기열교환)\s*/i, "")
+      .trim();
+    const parts = rawArg.split(/\s+/);
+    const first = parseInt(parts[0] || "", 10);
+    const second = parseInt(parts[1] || "", 10);
+    if (Number.isNaN(first) || Number.isNaN(second) || first < 1 || second < 1) {
+      await message.reply(
+        "❌ 맞바꿀 두 대기열 번호를 입력해주세요. (예: `!swap 1 3`)",
+      );
+      return;
+    }
+    const result = swapGuildMusicQueueItems(guildId, first, second);
+    if (!result) {
+      await message.reply(
+        `❌ 대기열 범위(현재 ${getGuildMusicQueue(guildId).length}곡) 내에서 올바른 번호를 입력해주세요.`,
+      );
+      return;
+    }
+    notifyDashboardStatusChanged(getDashboardStatusSnapshot());
+    await message.reply(
+      `🔀 대기열 **#${first}번(${result.second.track.title})** ↔ **#${second}번(${result.first.track.title})** 위치를 맞바꿨습니다.`,
+    );
+    return;
+  }
+
   // 현재 재생 중인 곡 정보 확인 프리픽스 명령 (!now, !현재곡)
   if (/^(!now|!현재곡)\s*$/i.test(message.content.trim())) {
     const guildId = message.guild?.id;
@@ -749,7 +822,12 @@ export const handlePrefixCommand = async (
   }
 
   // 음악/유튜브 재생 프리픽스 명령
+  const trimmedContent = message.content.trim();
+  const isInsertPrefix = /^(!insert|!끼어들기|!다음재생|!우선재생)(?:\s+.*)?$/i.test(
+    trimmedContent,
+  );
   const isPlayMusicPrefix =
+    isInsertPrefix ||
     (message.content.startsWith("설아야") &&
       (message.content.endsWith("틀어줘") ||
         message.content.endsWith("재생해줘") ||
@@ -761,7 +839,20 @@ export const handlePrefixCommand = async (
 
   if (isPlayMusicPrefix) {
     let userQuery = "";
-    if (message.content.startsWith("!play ")) {
+    let insertPosition: number | undefined;
+    if (isInsertPrefix) {
+      let rawInsertArg = trimmedContent
+        .replace(/^(!insert|!끼어들기|!다음재생|!우선재생)\s*/i, "")
+        .trim();
+      const posMatch = rawInsertArg.match(/^#(\d+)\s+(.+)$/);
+      if (posMatch && posMatch[1] && posMatch[2]) {
+        insertPosition = Math.max(1, parseInt(posMatch[1], 10));
+        userQuery = posMatch[2].trim();
+      } else {
+        insertPosition = 1;
+        userQuery = rawInsertArg;
+      }
+    } else if (message.content.startsWith("!play ")) {
       userQuery = message.content.slice(6).trim();
     } else if (message.content.startsWith("!노래 ")) {
       userQuery = message.content.slice(4).trim();
@@ -775,7 +866,11 @@ export const handlePrefixCommand = async (
     }
 
     if (!userQuery) {
-      await message.reply("재생할 음악 제목이나 유튜브 링크를 입력해주세요. 예: `설아야 뉴진스 디토 틀어줘` 또는 `!play 아이유 밤편지`");
+      await message.reply(
+        isInsertPrefix
+          ? "대기열에 끼워 넣을 곡명이나 유튜브 링크를 입력해주세요. 예: `!끼어들기 아이유 밤편지` 또는 `!끼어들기 #2 아이유 밤편지`"
+          : "재생할 음악 제목이나 유튜브 링크를 입력해주세요. 예: `설아야 뉴진스 디토 틀어줘` 또는 `!play 아이유 밤편지`",
+      );
       return;
     }
 
@@ -803,6 +898,7 @@ export const handlePrefixCommand = async (
         player: getGuildAudioPlayer(voiceChannel.guild.id),
         connection,
         requesterName: message.member?.displayName || message.author.username,
+        insertPosition,
         onQueueEnd: () => {
           setGuildPlaybackMode(voiceChannel.guild.id, "idle");
           notifyDashboardStatusChanged(getDashboardStatusSnapshot());

@@ -30,6 +30,9 @@ import {
   getGuildMusicQueue,
   skipGuildMusic,
   clearGuildMusicQueue,
+  removeGuildMusicQueueItem,
+  moveGuildMusicQueueItem,
+  swapGuildMusicQueueItems,
   getGuildCurrentTrack,
 } from "./youtubeMusic.ts";
 import { getGuildAudioPlayer } from "./audioPlayer.ts";
@@ -470,9 +473,10 @@ export const registerDashboardRoutes = (
     res.json({ success: true, action, guildId });
   });
 
-  // 9. 실시간 제어 API: 음악 제어 (play, stop)
+  // 9. 실시간 제어 API: 음악 제어 (play, stop, skip, queue, clear_queue, remove, move, swap)
   app.post("/api/control/music", async (req: Request, res: Response) => {
-    const { guildId, action, songTitle } = req.body || {};
+    const { guildId, action, songTitle, insertPosition, index, from, to, first, second } =
+      req.body || {};
     if (!guildId || !action) {
       res.status(400).json({ error: "guildId와 action이 필요합니다." });
       return;
@@ -524,11 +528,71 @@ export const registerDashboardRoutes = (
       return;
     }
 
+    if (action === "remove") {
+      const idx = Number(index);
+      if (!Number.isInteger(idx) || idx < 1) {
+        res.status(400).json({ error: "올바른 대기열 순번(index)을 입력해주세요." });
+        return;
+      }
+      const removed = removeGuildMusicQueueItem(guildId, idx);
+      if (!removed) {
+        res.status(404).json({ error: `대기열 ${idx}번 곡을 찾을 수 없습니다.` });
+        return;
+      }
+      notifyDashboardStatusChanged(getStatusSnapshot());
+      res.json({ success: true, action: "remove", removed });
+      return;
+    }
+
+    if (action === "move") {
+      const fromIdx = Number(from);
+      const toIdx = Number(to);
+      if (!Number.isInteger(fromIdx) || !Number.isInteger(toIdx) || fromIdx < 1 || toIdx < 1) {
+        res.status(400).json({ error: "올바른 from, to 순번을 입력해주세요." });
+        return;
+      }
+      const moved = moveGuildMusicQueueItem(guildId, fromIdx, toIdx);
+      if (!moved) {
+        res.status(404).json({ error: "대기열 범위 내의 순번을 입력해주세요." });
+        return;
+      }
+      notifyDashboardStatusChanged(getStatusSnapshot());
+      res.json({ success: true, action: "move", ...moved });
+      return;
+    }
+
+    if (action === "swap") {
+      const firstIdx = Number(first);
+      const secondIdx = Number(second);
+      if (
+        !Number.isInteger(firstIdx) ||
+        !Number.isInteger(secondIdx) ||
+        firstIdx < 1 ||
+        secondIdx < 1
+      ) {
+        res.status(400).json({ error: "올바른 first, second 순번을 입력해주세요." });
+        return;
+      }
+      const swapped = swapGuildMusicQueueItems(guildId, firstIdx, secondIdx);
+      if (!swapped) {
+        res.status(404).json({ error: "대기열 범위 내의 순번을 입력해주세요." });
+        return;
+      }
+      notifyDashboardStatusChanged(getStatusSnapshot());
+      res.json({ success: true, action: "swap", ...swapped });
+      return;
+    }
+
     if (action === "play") {
       if (!songTitle || !String(songTitle).trim()) {
         res.status(400).json({ error: "재생할 곡명 또는 유튜브 검색어를 입력해주세요." });
         return;
       }
+
+      const parsedInsertPos =
+        insertPosition !== undefined && insertPosition !== null
+          ? Math.max(1, parseInt(String(insertPosition), 10))
+          : undefined;
 
       setGuildPlaybackMode(guildId, "music");
       notifyDashboardStatusChanged(getStatusSnapshot());
@@ -540,6 +604,7 @@ export const registerDashboardRoutes = (
         player: getGuildAudioPlayer(guildId),
         connection,
         requesterName: "대시보드",
+        insertPosition: Number.isNaN(parsedInsertPos as number) ? undefined : parsedInsertPos,
         onQueueEnd: () => {
           setGuildPlaybackMode(guildId, "idle");
           notifyDashboardStatusChanged(getStatusSnapshot());

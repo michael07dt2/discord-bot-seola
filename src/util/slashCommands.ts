@@ -39,6 +39,8 @@ import {
   skipGuildMusic,
   clearGuildMusicQueue,
   removeGuildMusicQueueItem,
+  moveGuildMusicQueueItem,
+  swapGuildMusicQueueItems,
 } from "./youtubeMusic.ts";
 import {
   getBotStatusReport,
@@ -176,6 +178,14 @@ export const slashCommands = [
         .setNameLocalization("ko", "곡명_또는_링크")
         .setDescription("곡명, 아티스트, 또는 유튜브 URL (플레이리스트 지원)")
         .setRequired(true),
+    )
+    .addIntegerOption((opt) =>
+      opt
+        .setName("position")
+        .setNameLocalization("ko", "끼어들기_위치")
+        .setDescription("대기열에 끼어들 순번 (1 입력 시 다음 곡으로 바로 예약)")
+        .setMinValue(1)
+        .setRequired(false),
     ),
 
   new SlashCommandBuilder()
@@ -354,6 +364,71 @@ export const slashCommands = [
             .setName("index")
             .setNameLocalization("ko", "번호")
             .setDescription("삭제할 대기열 순번 (1부터 시작)")
+            .setMinValue(1)
+            .setRequired(true),
+        ),
+    )
+    .addSubcommand((sub) =>
+      sub
+        .setName("insert")
+        .setNameLocalization("ko", "끼어들기")
+        .setDescription("대기열의 원하는 위치(기본 1번)에 곡을 끼워 넣습니다.")
+        .addStringOption((opt) =>
+          opt
+            .setName("query")
+            .setNameLocalization("ko", "곡명_또는_링크")
+            .setDescription("곡명, 아티스트, 또는 유튜브 URL")
+            .setRequired(true),
+        )
+        .addIntegerOption((opt) =>
+          opt
+            .setName("position")
+            .setNameLocalization("ko", "위치")
+            .setDescription("삽입할 대기열 순번 (기본값: 1 = 다음 곡)")
+            .setMinValue(1)
+            .setRequired(false),
+        ),
+    )
+    .addSubcommand((sub) =>
+      sub
+        .setName("move")
+        .setNameLocalization("ko", "대기열이동")
+        .setDescription("대기열에 있는 곡의 순서를 원하는 위치로 이동합니다.")
+        .addIntegerOption((opt) =>
+          opt
+            .setName("from")
+            .setNameLocalization("ko", "현재번호")
+            .setDescription("이동할 곡의 현재 대기열 순번 (1부터 시작)")
+            .setMinValue(1)
+            .setRequired(true),
+        )
+        .addIntegerOption((opt) =>
+          opt
+            .setName("to")
+            .setNameLocalization("ko", "이동할번호")
+            .setDescription("옮길 목표 대기열 순번 (1부터 시작)")
+            .setMinValue(1)
+            .setRequired(true),
+        ),
+    )
+    .addSubcommand((sub) =>
+      sub
+        .setName("swap")
+        .setNameLocalization("ko", "대기열교환")
+        .setDescription("대기열에 있는 두 곡의 순서를 서로 맞바꿉니다.")
+        .addIntegerOption((opt) =>
+          opt
+            .setName("first")
+            .setNameLocalization("ko", "첫번째번호")
+            .setDescription("첫 번째 곡 순번 (1부터 시작)")
+            .setMinValue(1)
+            .setRequired(true),
+        )
+        .addIntegerOption((opt) =>
+          opt
+            .setName("second")
+            .setNameLocalization("ko", "두번째번호")
+            .setDescription("두 번째 곡 순번 (1부터 시작)")
             .setMinValue(1)
             .setRequired(true),
         ),
@@ -757,6 +832,7 @@ export const handleSlashCommand = async (
     // 3-2. /play (음악 재생)
     if (commandName === "play") {
       const query = interaction.options.getString("query", true);
+      const insertPosition = interaction.options.getInteger("position") ?? undefined;
       const member = interaction.member as GuildMember;
       const voiceChannel = member?.voice?.channel as VoiceBasedChannel | null;
 
@@ -790,6 +866,7 @@ export const handleSlashCommand = async (
           player: guildPlayer,
           connection,
           requesterName: userName,
+          insertPosition,
           onQueueEnd: () => {
             setGuildPlaybackMode(voiceChannel.guild.id, "idle");
             if (sharedStatusSnapshotGetter) {
@@ -1225,6 +1302,124 @@ export const handleSlashCommand = async (
         }
         await interaction.editReply(
           `🗑️ 대기열 **#${index}번** 곡(**${removed.track.title}**)을 삭제했습니다.`,
+        );
+        return;
+      }
+
+      if (sub === "insert") {
+        const query = interaction.options.getString("query", true);
+        const position = interaction.options.getInteger("position") ?? 1;
+        const member = interaction.member as GuildMember;
+        const voiceChannel = member?.voice?.channel as VoiceBasedChannel | null;
+
+        if (!voiceChannel) {
+          await interaction.editReply("❌ 먼저 음성 채널에 입장한 후 음악을 재생해주세요!");
+          return;
+        }
+
+        const guildId = voiceChannel.guild.id;
+        const guildPlayer = getGuildAudioPlayer(guildId);
+        let connection = getVoiceConnection(guildId);
+        const hasActiveSession = getActiveVoiceSessions().some((s) => s.guildId === guildId);
+
+        if (!connection || connection.joinConfig.channelId !== voiceChannel.id || !hasActiveSession) {
+          connection = await connectToVoiceChannel(voiceChannel);
+          setupVoiceChatListener({
+            client: interaction.client,
+            connection,
+            voiceChannel,
+            textChannel: interaction.channel?.isSendable() ? interaction.channel : null,
+            player: guildPlayer,
+          });
+        }
+
+        setGuildPlaybackMode(guildId, "music");
+
+        const playResult = await playMusicTrack({
+          guildId,
+          query,
+          player: guildPlayer,
+          connection,
+          requesterName: userName,
+          insertPosition: position,
+          onQueueEnd: () => {
+            setGuildPlaybackMode(guildId, "idle");
+            if (sharedStatusSnapshotGetter) {
+              notifyDashboardStatusChanged(sharedStatusSnapshotGetter());
+            }
+          },
+        });
+
+        if (!playResult.success || !playResult.track) {
+          if (!getGuildCurrentTrack(guildId)) {
+            setGuildPlaybackMode(guildId, "idle");
+          }
+          await interaction.editReply(
+            `❌ ${playResult.errorMessage || "음악을 재생할 수 없습니다."}`,
+          );
+          return;
+        }
+
+        const embed = createMusicTrackEmbed(playResult.track, userName, guildId, {
+          ...(playResult.queued ? { queued: true } : {}),
+          ...(playResult.queuePosition !== undefined
+            ? { queuePosition: playResult.queuePosition }
+            : {}),
+          ...(playResult.playlistCount !== undefined
+            ? { playlistCount: playResult.playlistCount }
+            : {}),
+        });
+        await interaction.editReply({ embeds: [embed] });
+        if (interaction.channel?.isSendable()) {
+          await sendOrUpdateMusicControlPanel(guildId, interaction.channel, guildPlayer);
+        }
+        return;
+      }
+
+      if (sub === "move") {
+        if (!interaction.guildId) {
+          await interaction.editReply("❌ 서버(길드) 채널에서만 사용할 수 있습니다.");
+          return;
+        }
+        const from = interaction.options.getInteger("from", true);
+        const to = interaction.options.getInteger("to", true);
+        const result = moveGuildMusicQueueItem(interaction.guildId, from, to);
+        if (!result) {
+          const queueLen = getGuildMusicQueue(interaction.guildId).length;
+          await interaction.editReply(
+            `❌ 대기열 범위(현재 ${queueLen}곡) 내에서 올바른 번호를 입력해주세요.`,
+          );
+          return;
+        }
+        if (sharedStatusSnapshotGetter) {
+          notifyDashboardStatusChanged(sharedStatusSnapshotGetter());
+        }
+        await interaction.editReply(
+          `↕️ **${result.item.track.title}** 곡을 대기열 **#${result.from}번 → #${result.to}번**으로 이동했습니다.`,
+        );
+        return;
+      }
+
+      if (sub === "swap") {
+        if (!interaction.guildId) {
+          await interaction.editReply("❌ 서버(길드) 채널에서만 사용할 수 있습니다.");
+          return;
+        }
+        const first = interaction.options.getInteger("first", true);
+        const second = interaction.options.getInteger("second", true);
+        const result = swapGuildMusicQueueItems(interaction.guildId, first, second);
+        if (!result) {
+          const queueLen = getGuildMusicQueue(interaction.guildId).length;
+          await interaction.editReply(
+            `❌ 대기열 범위(현재 ${queueLen}곡) 내에서 올바른 번호를 입력해주세요.`,
+          );
+          return;
+        }
+        if (sharedStatusSnapshotGetter) {
+          notifyDashboardStatusChanged(sharedStatusSnapshotGetter());
+        }
+        await interaction.editReply(
+          `🔀 대기열 **#${first}번(${result.second.track.title})** ↔ **#${second}번(${result.first.track.title})** 위치를 맞바꿨습니다.`,
         );
         return;
       }

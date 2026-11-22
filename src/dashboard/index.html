@@ -421,6 +421,7 @@
             </select>
             <input type="text" id="songCustomInput" placeholder="유튜브 곡명 또는 URL 입력..." style="flex: 2 1 220px;" />
             <button class="btn btn-primary" id="playMusicBtn">재생</button>
+            <button class="btn btn-secondary" id="insertMusicBtn" title="대기열 맨 앞(다음 곡)에 끼워 넣기">⚡ 끼어들기</button>
             <button class="btn btn-secondary" id="skipMusicBtn">⏭️ 다음곡</button>
             <button class="btn btn-secondary" id="stopMusicBtn">정지</button>
           </div>
@@ -641,13 +642,25 @@
         }
         if (musicState && (musicState.currentTrack || (musicState.queue && musicState.queue.length > 0))) {
           const trackTitle = musicState.currentTrack ? escapeHtml(musicState.currentTrack.title) : "없음";
+          const trackChannel = musicState.currentTrack && musicState.currentTrack.uploader
+            ? ` <span style="color: var(--text-muted); font-size: 12px;">(${escapeHtml(musicState.currentTrack.uploader)})</span>`
+            : "";
           const queueList = musicState.queue || [];
           const queueHtml = queueList.length > 0
-            ? `<div class="queue-chips">${queueList.slice(0, 5).map((q, i) => `<span class="queue-chip">${i + 1}. ${escapeHtml(q.title)}</span>`).join("")}${queueList.length > 5 ? `<span class="queue-chip">+${queueList.length - 5}곡</span>` : ""}</div>`
+            ? `<div class="queue-chips" style="display:flex; flex-direction:column; gap:4px; width:100%;">${queueList.slice(0, 10).map((q, i) => `
+              <div class="queue-chip" style="display:flex; align-items:center; justify-content:space-between; gap:6px; width:100%;">
+                <span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${i + 1}. ${escapeHtml(q.title)}</span>
+                <span style="display:flex; gap:3px; flex-shrink:0;">
+                  ${i > 0 ? `<button class="btn btn-secondary btn-sm" style="padding:1px 5px; font-size:11px;" onclick="editQueueItem('move', ${i + 1}, 1)" title="맨 앞으로">⏫</button>` : ""}
+                  ${i > 0 ? `<button class="btn btn-secondary btn-sm" style="padding:1px 5px; font-size:11px;" onclick="editQueueItem('move', ${i + 1}, ${i})" title="위로">⬆️</button>` : ""}
+                  ${i < queueList.length - 1 ? `<button class="btn btn-secondary btn-sm" style="padding:1px 5px; font-size:11px;" onclick="editQueueItem('move', ${i + 1}, ${i + 2})" title="아래로">⬇️</button>` : ""}
+                  <button class="btn btn-danger btn-sm" style="padding:1px 5px; font-size:11px;" onclick="editQueueItem('remove', ${i + 1})" title="삭제">✕</button>
+                </span>
+              </div>`).join("")}${queueList.length > 10 ? `<span class="queue-chip">+${queueList.length - 10}곡</span>` : ""}</div>`
             : `<span style="color: var(--text-muted);">대기열 비어 있음</span>`;
           nowPlayingBox.style.display = "flex";
           nowPlayingBox.innerHTML = `
-            <div>🎵 <strong>재생 중:</strong> ${trackTitle}</div>
+            <div>🎵 <strong>재생 중:</strong> ${trackTitle}${trackChannel}</div>
             <div>📜 <strong>대기열 (${queueList.length}곡):</strong></div>
             ${queueHtml}
           `;
@@ -875,7 +888,7 @@
       }
     });
 
-    document.getElementById("playMusicBtn").addEventListener("click", async () => {
+    async function requestPlayMusic(insertPosition) {
       const customInput = document.getElementById("songCustomInput").value.trim();
       const selectVal = document.getElementById("songSelect").value;
       const songTitle = customInput || selectVal;
@@ -887,7 +900,8 @@
       const guildId = getSelectedGuildId();
       if (!guildId) return showToast("먼저 디스코드 음성 채널에 봇을 입장시켜 주세요!", "error");
 
-      const btn = document.getElementById("playMusicBtn");
+      const btn = document.getElementById(insertPosition ? "insertMusicBtn" : "playMusicBtn");
+      const originalText = btn.textContent;
       btn.disabled = true;
       btn.textContent = "탐색 중...";
 
@@ -895,7 +909,12 @@
         const res = await fetch("/api/control/music", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ guildId, action: "play", songTitle }),
+          body: JSON.stringify({
+            guildId,
+            action: "play",
+            songTitle,
+            ...(insertPosition ? { insertPosition } : {}),
+          }),
         });
         const data = await res.json();
         if (!res.ok) {
@@ -907,9 +926,31 @@
         showToast("음악 재생 요청 중 오류가 발생했습니다.", "error");
       } finally {
         btn.disabled = false;
-        btn.textContent = "재생";
+        btn.textContent = originalText;
       }
-    });
+    }
+
+    document.getElementById("playMusicBtn").addEventListener("click", () => requestPlayMusic());
+    document.getElementById("insertMusicBtn").addEventListener("click", () => requestPlayMusic(1));
+
+    window.editQueueItem = async function(action, fromOrIndex, to) {
+      const guildId = getSelectedGuildId();
+      if (!guildId) return showToast("활성 음성 세션이 없습니다.", "error");
+      const body = action === "remove"
+        ? { guildId, action: "remove", index: fromOrIndex }
+        : { guildId, action: "move", from: fromOrIndex, to };
+      const res = await fetch("/api/control/music", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        showToast(data.error || "대기열 수정 실패", "error");
+      } else {
+        showToast(action === "remove" ? `대기열 #${fromOrIndex}번 곡을 삭제했습니다.` : `대기열 #${fromOrIndex}번 → #${to}번으로 이동했습니다.`, "info");
+      }
+    };
 
     document.getElementById("skipMusicBtn").addEventListener("click", async () => {
       const guildId = getSelectedGuildId();
