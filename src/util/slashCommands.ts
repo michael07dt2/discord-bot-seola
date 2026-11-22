@@ -220,10 +220,12 @@ export const slashCommands = [
             .addChoices(
               { name: "🤖 케이 (블루아카이브 KEY Qwen3-TTS 복제)", value: "kei" },
               { name: "⚡ 큐웬 (Qwen3-TTS MLX 신경망 음성)", value: "qwen" },
+              // TODO: 추후 제거 예정 (CosyVoice)
               { name: "🔮 코지 (CosyVoice 3 신경망 음성)", value: "cosy" },
-              { name: "🎨 레바 (유튜브 스트리머 레바 CosyVoice)", value: "reva" },
-              { name: "🍊 감규리 (유튜브 감규리 CosyVoice)", value: "gamgyuri" },
+              { name: "🎨 레바 (유튜브 스트리머 레바 Qwen3-TTS)", value: "reva" },
+              { name: "🍊 감규리 (유튜브 감규리 Qwen3-TTS)", value: "gamgyuri" },
               { name: "🐱 다시는 만날 수 없는 (Qwen3-TTS)", value: "myoya" },
+              // TODO: 추후 제거 예정 (CosyVoice)
               { name: "🎨 다시는 만날 수 없는 (CosyVoice)", value: "myoya_cosy" },
               { name: "🌸 설아 (기본 20대 여성톤, MeloTTS)", value: "seola" },
               { name: "✨ 발랄 (톤 업, 귀엽고 밝은 어투)", value: "lively" },
@@ -255,10 +257,12 @@ export const slashCommands = [
         .addChoices(
           { name: "🤖 케이 (블루아카이브 KEY 복제 음성)", value: "kei" },
           { name: "⚡ 큐웬 (Qwen3-TTS MLX 신경망 음성)", value: "qwen" },
+          // TODO: 추후 제거 예정 (CosyVoice)
           { name: "🔮 코지 (CosyVoice 3 신경망 음성)", value: "cosy" },
-          { name: "🎨 레바 (유튜브 스트리머 레바 CosyVoice)", value: "reva" },
-          { name: "🍊 감규리 (유튜브 감규리 CosyVoice)", value: "gamgyuri" },
+          { name: "🎨 레바 (유튜브 스트리머 레바 Qwen3-TTS)", value: "reva" },
+          { name: "🍊 감규리 (유튜브 감규리 Qwen3-TTS)", value: "gamgyuri" },
           { name: "🐱 다시는 만날 수 없는 (Qwen3-TTS)", value: "myoya" },
+          // TODO: 추후 제거 예정 (CosyVoice)
           { name: "🎨 다시는 만날 수 없는 (CosyVoice)", value: "myoya_cosy" },
           { name: "🌸 설아 (기본 20대 여성톤, MeloTTS)", value: "seola" },
           { name: "✨ 발랄 (톤 업, 귀엽고 밝은 어투)", value: "lively" },

@@ -1,3 +1,6 @@
+/**
+ * TODO: 추후 제거 예정 (CosyVoice 지원 종료 및 Qwen3-TTS로 통합 예정)
+ */
 import fs from "fs";
 import path from "path";
 import { PassThrough, type Readable } from "stream";

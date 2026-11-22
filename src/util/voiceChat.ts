@@ -150,6 +150,7 @@ export interface VoicePreset {
   meloNoiseScale?: number;
   meloNoiseScaleW?: number;
   meloSdpRatio?: number;
+  // TODO: 추후 제거 예정 (CosyVoice 지원 종료 및 Qwen3-TTS 통합 예정)
   cosySpeed?: number;
   cosyMode?:
     | "3초 고속 복제"
@@ -199,6 +200,7 @@ export const VOICE_PRESETS: Record<string, VoicePreset> = {
       "에이! 진짜 그렇게 착한 애 취급하지 말라구요! 그쵸! 그렇게까지 애 아니니까요! 무섭겠다... 선생님 지금 웃었죠? 똑똑히 봤어요! 두고 봐요! 언젠간 그 몸에 뼈저리게 새겨줄테니까!",
     qwenInstruct:
       "차갑고 감정이 절제된 어린 소녀의 목소리. 아리스보다 반 옥타브 낮고 차분한 톤으로, 억양의 높낮이 변화가 적고 기계처럼 또박또박 일정한 속도로 말한다.",
+    // TODO: 추후 제거 예정 (CosyVoice 폴백용)
     cosySpeed: 1.0,
     cosyMode: "3초 고속 복제",
     cosyPromptWav: resolveAssetPath("asset/youtube_kei.wav"),
@@ -223,10 +225,11 @@ export const VOICE_PRESETS: Record<string, VoicePreset> = {
     pitch: "+0Hz",
     rate: "+0%",
   },
+  // TODO: 추후 제거 예정 (CosyVoice 지원 종료 및 Qwen3-TTS 통합 예정)
   cosy: {
     id: "cosy",
-    label: "코지 (CosyVoice 음성 복제)",
-    description: "환경 변수(.env)에 지정된 프롬프트 음성 기반 고음질 보이스",
+    label: "코지 (CosyVoice 음성 복제 - 추후 제거 예정)",
+    description: "환경 변수(.env)에 지정된 프롬프트 음성 기반 고음질 보이스 (추후 제거 예정)",
     engine: "cosyvoice",
     cosySpeed: 1.0,
     cosyMode: CONFIG.COSYVOICE_MODE,
@@ -238,9 +241,16 @@ export const VOICE_PRESETS: Record<string, VoicePreset> = {
   },
   reva: {
     id: "reva",
-    label: "레바 (유튜브 스트리머 레바 음성 복제)",
-    description: "재치있고 시니컬한 드로잉 스트리머 레바의 보이스 (CosyVoice)",
-    engine: "cosyvoice",
+    label: "레바 (유튜브 스트리머 레바 Qwen3-TTS 복제)",
+    description: "재치있고 시니컬한 드로잉 스트리머 레바의 보이스 (Qwen3-TTS)",
+    engine: "qwen",
+    qwenMode: "xvec",
+    qwenRefAudio: resolveAssetPath("asset/youtube_prompt.wav"),
+    qwenRefText:
+      "확실히 요새 좀 옛날보단 그림에 대한 상상력이 줄어든 것 같아요.".normalize(
+        "NFC",
+      ),
+    // TODO: 추후 제거 예정 (CosyVoice 폴백용)
     cosySpeed: 1.0,
     cosyMode: "3초 고속 복제",
     cosyPromptWav: resolveAssetPath("asset/youtube_prompt.wav"),
@@ -255,9 +265,16 @@ export const VOICE_PRESETS: Record<string, VoicePreset> = {
   },
   gamgyuri: {
     id: "gamgyuri",
-    label: "감규리 (유튜브 감규리 음성 복제)",
-    description: "발랄하고 귀여운 게이머 감규리의 보이스 (CosyVoice)",
-    engine: "cosyvoice",
+    label: "감규리 (유튜브 감규리 Qwen3-TTS 복제)",
+    description: "발랄하고 귀여운 게이머 감규리의 보이스 (Qwen3-TTS)",
+    engine: "qwen",
+    qwenMode: "xvec",
+    qwenRefAudio: resolveAssetPath("asset/youtube_prompt_307_318.wav"),
+    qwenRefText:
+      "자 이렇게 오늘의 게임 마무리해보도록 하겠습니다. 어쩐지 뭐 얼마 안 한 거 같은데 여기 다 온 거 같지?".normalize(
+        "NFC",
+      ),
+    // TODO: 추후 제거 예정 (CosyVoice 폴백용)
     cosySpeed: 1.0,
     cosyMode: "3초 고속 복제",
     cosyPromptWav: resolveAssetPath("asset/youtube_prompt_307_318.wav"),
@@ -284,6 +301,7 @@ export const VOICE_PRESETS: Record<string, VoicePreset> = {
       ),
     qwenInstruct:
       "A young woman with a bright, cute, and high-pitched voice, speaking cheerfully with lively intonation.",
+    // TODO: 추후 제거 예정 (CosyVoice 폴백용)
     cosySpeed: 1.0,
     cosyMode: "3초 고속 복제",
     cosyPromptWav: resolveAssetPath("asset/youtube_myoya.wav"),
@@ -298,11 +316,12 @@ export const VOICE_PRESETS: Record<string, VoicePreset> = {
     pitch: "+0Hz",
     rate: "+0%",
   },
+  // TODO: 추후 제거 예정 (CosyVoice 지원 종료 및 Qwen3-TTS 통합 예정 - myoya 프리셋으로 대체)
   myoya_cosy: {
     id: "myoya_cosy",
-    label: "다시는 만날 수 없는 (CosyVoice 음성 복제)",
+    label: "다시는 만날 수 없는 (CosyVoice 음성 복제 - 추후 제거 예정)",
     description:
-      "다시는 만날 수 없는 그 사람의 다정하고 나긋나긋한 음성 복제 보이스 (CosyVoice)",
+      "다시는 만날 수 없는 그 사람의 다정하고 나긋나긋한 음성 복제 보이스 (CosyVoice, 추후 제거 예정)",
     engine: "cosyvoice",
     cosySpeed: 1.0,
     cosyMode: "3초 고속 복제",
@@ -1925,6 +1944,7 @@ export const synthesizeSpeechResource = async (
   }
 
   // 0차: 로컬 CosyVoice 대규모 신경망 엔진 (상위 디렉터리 CosyVoice Gradio 5.x WebUI 연동)
+  // TODO: 추후 제거 예정 (CosyVoice 지원 종료 및 Qwen3-TTS 통합 예정)
   if (preset.engine === "cosyvoice") {
     try {
       const isAvailable = await isCosyVoiceAvailable();
@@ -2195,9 +2215,11 @@ export const createSentenceSpeechPipeline = (
   options?: { maxSentences?: number; splitSentences?: boolean },
 ) => {
   const pipelineStartMs = Date.now();
-  const isCosyVoicePreset = getCurrentVoicePreset().engine === "cosyvoice";
-  const shouldSplit = options?.splitSentences ?? !isCosyVoicePreset;
-  // 고부하 신경망 TTS(CosyVoice)의 병렬 폭주 및 소켓 타임아웃을 방지하기 위해 작업 함수 큐로 순차 처리
+  const currentEngine = getCurrentVoicePreset().engine;
+  const isWholeReplyEngine =
+    currentEngine === "cosyvoice" || currentEngine === "qwen";
+  const shouldSplit = options?.splitSentences ?? !isWholeReplyEngine;
+  // 고부하 신경망 TTS(Qwen3-TTS / CosyVoice)의 병렬 폭주 및 소켓 타임아웃을 방지하기 위해 작업 함수 큐로 순차 처리
   const synthesisQueue: (() => Promise<SynthesizedSpeechResource | null>)[] =
     [];
   // CosyVoice 프리셋은 대화를 자르지 않고 전체 발화, 일반 스트리밍 엔진은 최대 3문장으로 제한

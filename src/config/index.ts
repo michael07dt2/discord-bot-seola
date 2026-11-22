@@ -91,6 +91,7 @@ export const CONFIG = {
   TTS_PRESET: process.env.TTS_PRESET || "seola",
 
   // CosyVoice TTS 백엔드 설정 (외부 원격 서버 우선, 무응답 시 내부 로컬 서버 폴백)
+  // TODO: 추후 제거 예정 (CosyVoice 지원 종료 및 Qwen3-TTS 통합 예정)
   COSYVOICE_API_URL: (
     process.env.COSYVOICE_API_URL || "http://192.168.50.100:50000"
   ).replace(/\/+$/, ""),
