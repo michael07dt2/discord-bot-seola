@@ -25,3 +25,12 @@
 5. **음성 (음성 채널 STT/TTS)**: 
    - STT 발음 정규화(오인식 보정), 각 엔진(MeloTTS, CosyVoice, Qwen3-TTS)별 합성 파라미터 전달 및 스마트 폴백 로직이 누락 없이 연결되었는지 확인.
 
+## 5. 업데이트 적용 및 봇 재시작 (Docker 배포)
+- 설아 봇은 호스트에서 직접 Node/PM2로 실행되지 않고 **`seola-bot` Docker 컨테이너**로 구동됨 (`compose.yaml`에 `./src:/app/src`, `./asset:/app/asset` 볼륨 마운트).
+- 사용자가 **"업데이트 적용해줘"**, **"봇 재시작해줘"**, **"변경사항 반영해줘"** 등을 지시하면, 탐색 과정 없이 즉시 `docker restart seola-bot`으로 컨테이너를 재시작(`BypassSandbox: true` 필요)하고 로그에서 정상 기동(`Logged in as`, `SlashCommands`)을 확인할 것:
+  ```bash
+  docker restart seola-bot && sleep 5 && docker logs --tail=30 seola-bot
+  ```
+- 주의: 현재 환경의 Docker CLI에는 `docker compose` 서브커맨드가 없으므로 `docker compose restart` 대신 `docker restart seola-bot`을 직접 사용할 것. (`package.json`·`Dockerfile` 변경 시에만 `docker build` / 컨테이너 재생성 필요)
+
+
