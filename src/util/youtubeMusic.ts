@@ -247,32 +247,62 @@ const formatPlaybackTime = (seconds: number): string => {
   return `${mins}:${String(secs).padStart(2, "0")}`;
 };
 
+/**
+ * HTTP/HTTPS 프로토콜을 사용하는 유효한 URL인지 검증
+ */
+export const isValidHttpUrl = (value: unknown): value is string => {
+  if (typeof value !== "string") return false;
+  const trimmed = value.trim();
+  if (!/^https?:\/\//i.test(trimmed)) return false;
+  try {
+    const parsed = new URL(trimmed);
+    return parsed.protocol === "http:" || parsed.protocol === "https:";
+  } catch {
+    return false;
+  }
+};
+
+const isNonPlayableYouTubeUrl = (url: string): boolean => {
+  return /youtube\.com\/(?:channel\/|c\/|user\/|@|feed\/)/i.test(url);
+};
+
 const mapRawEntryToYouTubeTrack = (
   entry: any,
   fallbackQuery: string,
 ): YouTubeTrackInfo | null => {
-  if (!entry) return null;
+  if (!entry || typeof entry !== "object") return null;
+  // 검색 래퍼/플레이리스트 컨테이너 또는 채널·탭 항목은 재생 가능한 트랙이 아님
+  if (entry._type === "playlist" || Array.isArray(entry.entries)) {
+    return null;
+  }
+  if (entry.ie_key === "YoutubeTab" || entry.extractor_key === "YoutubeTab") {
+    return null;
+  }
+
   const title = typeof entry.title === "string" ? entry.title : fallbackQuery;
   if (title === "[Private video]" || title === "[Deleted video]") {
     return null;
   }
 
-  const rawUrl: string | undefined =
-    entry.webpage_url ||
-    (typeof entry.url === "string" && entry.url.startsWith("http")
-      ? entry.url
-      : entry.id
+  const rawUrl: string | undefined = isValidHttpUrl(entry.webpage_url)
+    ? entry.webpage_url.trim()
+    : isValidHttpUrl(entry.url)
+      ? entry.url.trim()
+      : typeof entry.id === "string" && /^[a-zA-Z0-9_-]{11}$/.test(entry.id)
         ? `https://www.youtube.com/watch?v=${entry.id}`
-        : undefined);
+        : undefined;
 
-  if (!rawUrl) return null;
+  if (!rawUrl || !isValidHttpUrl(rawUrl) || isNonPlayableYouTubeUrl(rawUrl)) {
+    return null;
+  }
 
   const duration = typeof entry.duration === "number" ? entry.duration : 0;
-  const thumbnail =
+  const rawThumbnail =
     entry.thumbnail ||
     (Array.isArray(entry.thumbnails) && entry.thumbnails.length > 0
       ? entry.thumbnails[entry.thumbnails.length - 1]?.url
       : undefined);
+  const thumbnail = isValidHttpUrl(rawThumbnail) ? rawThumbnail.trim() : undefined;
 
   return {
     title,
@@ -297,7 +327,8 @@ export const searchYouTubeTracks = async (
 
   const isUrl = /^https?:\/\/(www\.|music\.)?(youtube\.com|youtu\.be)\//i.test(trimmed);
   const isPlaylistUrl = isUrl && (/[?&]list=/.test(trimmed) || /\/playlist\b/.test(trimmed));
-  const target = isUrl ? trimmed : `ytsearch1:${trimmed}`;
+  // 키워드 검색은 상위 5건까지 flatPlaylist로 조회해 채널(YoutubeTab) 항목을 건너뛰고 첫 유효 영상을 선택
+  const target = isUrl ? trimmed : `ytsearch5:${trimmed}`;
 
   try {
     const rawResult: any = await (youtubedl as any)(
@@ -309,21 +340,28 @@ export const searchYouTubeTracks = async (
             playlistEnd: 50,
             noWarnings: true,
           }
-        : {
-            dumpSingleJson: true,
-            noWarnings: true,
-            preferFreeFormats: true,
-            defaultSearch: "ytsearch1",
-          },
+        : isUrl
+          ? {
+              dumpSingleJson: true,
+              noWarnings: true,
+              preferFreeFormats: true,
+            }
+          : {
+              dumpSingleJson: true,
+              flatPlaylist: true,
+              noWarnings: true,
+            },
     );
 
-    if (Array.isArray(rawResult?.entries) && rawResult.entries.length > 0) {
-      const tracks = rawResult.entries
+    if (Array.isArray(rawResult?.entries) || rawResult?._type === "playlist") {
+      const entries = Array.isArray(rawResult?.entries) ? rawResult.entries : [];
+      const tracks = entries
         .map((entry: any) => mapRawEntryToYouTubeTrack(entry, trimmed))
         .filter((t: YouTubeTrackInfo | null): t is YouTubeTrackInfo => Boolean(t));
-      if (tracks.length > 0) {
-        return tracks;
+      if (!isUrl) {
+        return tracks.slice(0, 1);
       }
+      return tracks;
     }
 
     const single = mapRawEntryToYouTubeTrack(rawResult as Payload, trimmed);
@@ -979,7 +1017,6 @@ export const createMusicTrackEmbed = (
   const embed = new EmbedBuilder()
     .setColor(isQueued ? 0x5865f2 : 0xff0000)
     .setTitle(`${titlePrefix}${track.title}`)
-    .setURL(track.url)
     .setDescription(
       playlistCount && playlistCount > 1
         ? isQueued
@@ -998,7 +1035,11 @@ export const createMusicTrackEmbed = (
     .setFooter({ text: "설아 뮤직 플레이어 • 대기열: /music queue • 스킵: /music skip" })
     .setTimestamp();
 
-  if (track.thumbnail) {
+  if (isValidHttpUrl(track.url)) {
+    embed.setURL(track.url);
+  }
+
+  if (isValidHttpUrl(track.thumbnail)) {
     embed.setThumbnail(track.thumbnail);
   }
 
@@ -1068,7 +1109,9 @@ export const createMusicControlPanel = (
       session
         ? session.track.isLocal
           ? `**현재 트랙:** ${session.track.title}`
-          : `**현재 트랙:** [${session.track.title}](${session.track.url})`
+          : isValidHttpUrl(session.track.url)
+            ? `**현재 트랙:** [${session.track.title}](${session.track.url})`
+            : `**현재 트랙:** ${session.track.title}`
         : "현재 재생 중인 트랙이 없습니다.",
     )
     .addFields(

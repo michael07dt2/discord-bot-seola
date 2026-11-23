@@ -41,6 +41,7 @@ import {
   removeGuildMusicQueueItem,
   moveGuildMusicQueueItem,
   swapGuildMusicQueueItems,
+  isValidHttpUrl,
 } from "./youtubeMusic.ts";
 import {
   getBotStatusReport,
@@ -921,7 +922,9 @@ export const handleSlashCommand = async (
         }
       } catch (e: any) {
         console.error("음악 재생 연결 실패:", e);
-        setGuildPlaybackMode(voiceChannel.guild.id, "idle");
+        if (!getGuildCurrentTrack(voiceChannel.guild.id)) {
+          setGuildPlaybackMode(voiceChannel.guild.id, "idle");
+        }
         await interaction.editReply("❌ 음악 재생 중 예기치 못한 오류가 발생했습니다.");
       }
       return;
@@ -1444,13 +1447,15 @@ export const handleSlashCommand = async (
         const embed = new EmbedBuilder()
           .setColor(0xff0000)
           .setTitle(`🎶 현재 재생 중: ${track.title}`)
-          .setURL(track.url)
           .addFields(
             { name: "채널", value: track.uploader || "YouTube", inline: true },
             { name: "재생 시간", value: track.formattedDuration, inline: true },
             { name: "신청자", value: currentSession.requesterName || "알 수 없음", inline: true },
           );
-        if (track.thumbnail) {
+        if (isValidHttpUrl(track.url)) {
+          embed.setURL(track.url);
+        }
+        if (isValidHttpUrl(track.thumbnail)) {
           embed.setThumbnail(track.thumbnail);
         }
         await interaction.editReply({ embeds: [embed] });
